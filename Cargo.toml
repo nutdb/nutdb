@@ -1,0 +1,24 @@
+[workspace]
+members = ["components/*"]
+
+[package]
+name = "nutdb"
+version = "0.1.0"
+edition = "2021"
+authors = ["unbyte <i@shangyes.net>"]
+readme = "README.md"
+homepage = "https://github.com/nutdb/nutdb"
+repository = "https://github.com/nutdb/nutdb.git"
+description = "NutDB: an in-process analytical database for Rust."
+license = "MIT"
+documentation = "https://docs.rs/nutdb"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+nutdb-core = { path = "components/nutdb-core", version = "0.1.0" }
+nutdb-api-sql = { path = "components/nutdb-api-sql", version = "0.1.0", optional = true }
+
+[features]
+api-sql = ["nutdb-api-sql"]
+
