@@ -1,8 +1,6 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
-}
+#![cfg_attr(debug_assertions, allow(dead_code))]
+
+mod tokenizer;
+mod utils;
+mod ast;
+mod parser;
