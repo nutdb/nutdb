@@ -89,9 +89,7 @@ pub struct TokenSpan {
 
 impl TokenSpan {
     pub fn new(start: usize, end: usize) -> Self {
-        TokenSpan {
-            start, end
-        }
+        TokenSpan { start, end }
     }
 
     pub fn append(&mut self, len: usize) {
@@ -111,10 +109,7 @@ pub struct Token {
 
 impl Token {
     pub fn new(t: TokenType, span: TokenSpan) -> Self {
-        Token {
-            t,
-            span,
-        }
+        Token { t, span }
     }
 }
 

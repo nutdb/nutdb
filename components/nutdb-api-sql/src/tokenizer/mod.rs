@@ -1,5 +1,5 @@
-pub use error::{TokenizeError};
-pub use token::{Token, TokenType, TokenSpan};
+pub use error::TokenizeError;
+pub use token::{Token, TokenSpan, TokenType};
 use utf8_iter::Utf8Iter;
 
 mod error;
@@ -125,14 +125,18 @@ macro_rules! tokenize_string_literal {
                             // `\r` and `\n` are supported in string but should be escaped.
                             '\r' => break emit_error!(UnexpectedChar { ch: "\\r".into() }),
                             '\n' => break emit_error!(UnexpectedChar { ch: "\\n".into() }),
-                            _ => self.source.consume_peeked()
+                            _ => self.source.consume_peeked(),
                         }
                     }
-                    None => break emit_error!(UnexpectedEOF { ctx: "string literal".into()}),
+                    None => {
+                        break emit_error!(UnexpectedEOF {
+                            ctx: "string literal".into()
+                        })
+                    }
                 }
             }
         }
-    }
+    };
 }
 
 // All functions assume that there is a peeked char in iter.
@@ -145,9 +149,7 @@ impl Tokenizer<'_> {
 
         self.source.pin();
 
-        let span = self
-            .source
-            .take_while(|item| matches!(item, '0'..='9'));
+        let span = self.source.take_while(|item| matches!(item, '0'..='9'));
 
         if self.source.slice(&span) == "0" {
             // may be hex or float
@@ -158,7 +160,9 @@ impl Tokenizer<'_> {
                     // hex
                     self.source.consume_peeked();
                     // should not contain '0x'
-                    let span = self.source.take_while(|item| matches!(item, '0'..='9' | 'A'..='F' | 'a'..='f'));
+                    let span = self
+                        .source
+                        .take_while(|item| matches!(item, '0'..='9' | 'A'..='F' | 'a'..='f'));
                     return emit_token!(HexLiteral on span);
                 }
                 Some('.') => {
@@ -176,8 +180,7 @@ impl Tokenizer<'_> {
         }
 
         // consume fractional part
-        self.source
-            .skip_while(|item| matches!(item, '0'..='9'));
+        self.source.skip_while(|item| matches!(item, '0'..='9'));
 
         let span = self.source.cut_span();
 
@@ -224,7 +227,11 @@ impl Tokenizer<'_> {
         match self.source.peek() {
             Some('`') => self.source.consume_peeked(),
             Some(ch) => return emit_error!(UnexpectedChar { ch: ch.into() }),
-            None => return emit_error!(UnexpectedEOF { ctx: "delimited identifier".into() })
+            None => {
+                return emit_error!(UnexpectedEOF {
+                    ctx: "delimited identifier".into()
+                })
+            }
         }
         emit_token!(DelimitedIdentifier on span)
     }
@@ -325,7 +332,11 @@ impl Tokenizer<'_> {
                         end = self.source.cursor();
                     }
                 }
-                None => return emit_error!(UnexpectedEOF { ctx: "multiline comment".into() })
+                None => {
+                    return emit_error!(UnexpectedEOF {
+                        ctx: "multiline comment".into()
+                    })
+                }
             }
         }
         emit_token!(Comment on TokenSpan::new(start, end))
@@ -336,7 +347,8 @@ impl Tokenizer<'_> {
     /// Skips whitespaces and returns whether skipped whitespaces.
     fn skip_whitespace(&mut self) -> bool {
         let start = self.source.cursor();
-        self.source.skip_while(|item| matches!(item, ' ' | '\t' | '\n' | '\r'));
+        self.source
+            .skip_while(|item| matches!(item, ' ' | '\t' | '\n' | '\r'));
         start != self.source.cursor()
     }
 

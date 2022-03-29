@@ -1,5 +1,5 @@
-use std::str::from_utf8_unchecked;
 use crate::tokenizer::token::TokenSpan;
+use std::str::from_utf8_unchecked;
 
 pub struct Utf8Iter<'a> {
     raw: &'a [u8],
@@ -121,8 +121,8 @@ impl<'a> Utf8Iter<'a> {
 
     #[inline]
     pub fn take_while<P>(&mut self, mut predicate: P) -> TokenSpan
-        where
-            P: FnMut(char) -> bool,
+    where
+        P: FnMut(char) -> bool,
     {
         let start = self.cursor;
         loop {
@@ -139,8 +139,8 @@ impl<'a> Utf8Iter<'a> {
 
     #[inline]
     pub fn skip_while<P>(&mut self, mut predicate: P)
-        where
-            P: FnMut(char) -> bool,
+    where
+        P: FnMut(char) -> bool,
     {
         loop {
             if let Some(ch) = self.peek() {
