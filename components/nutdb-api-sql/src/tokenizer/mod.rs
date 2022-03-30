@@ -1,6 +1,7 @@
 pub use error::TokenizeError;
-pub use token::{Token, TokenSpan, TokenType};
-use utf8_iter::Utf8Iter;
+pub use token::{Token, TokenType};
+use utf8_iter::{Utf8Iter};
+pub use utf8_iter::{Position, Span};
 
 mod error;
 mod token;
@@ -19,6 +20,14 @@ impl<'a> Tokenizer<'a> {
             source: Utf8Iter::new(raw),
         }
     }
+
+    pub fn token_str(&self, token: &Token) -> &'a str {
+        self.source.slice(&token.span)
+    }
+
+    pub fn token_pos(&self, token: &Token) -> Position {
+        self.source.get_pos(token.span.start)
+    }
 }
 
 macro_rules! emit_error {
@@ -34,7 +43,7 @@ macro_rules! consume_peeked_and_emit_token {
     }};
     ($self:ident, $t:ident) => {{
         $self.source.consume_peeked();
-        Ok(Token::new(TokenType::$t, $self.source.cut_span()))
+        Ok(Token::new(TokenType::$t, $self.source.from_pinned()))
     }};
 }
 
@@ -43,7 +52,7 @@ macro_rules! emit_token {
         Ok(Token::new(TokenType::$t, $span))
     }};
     ($self:ident, $t:ident) => {{
-        Ok(Token::new(TokenType::$t, $self.source.cut_span()))
+        Ok(Token::new(TokenType::$t, $self.source.from_pinned()))
     }};
 }
 
@@ -182,7 +191,7 @@ impl Tokenizer<'_> {
         // consume fractional part
         self.source.skip_while(|item| matches!(item, '0'..='9'));
 
-        let span = self.source.cut_span();
+        let span = self.source.from_pinned();
 
         if self.source.slice(&span) == "." {
             // dot
@@ -339,7 +348,7 @@ impl Tokenizer<'_> {
                 }
             }
         }
-        emit_token!(Comment on TokenSpan::new(start, end))
+        emit_token!(Comment on Span::new(start, end))
     }
 }
 
@@ -353,7 +362,7 @@ impl Tokenizer<'_> {
     }
 
     #[inline]
-    fn take_identifier(&mut self) -> TokenSpan {
+    fn take_identifier(&mut self) -> Span {
         self.source
             .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'))
     }

@@ -1,3 +1,5 @@
+use crate::tokenizer::utf8_iter::Span;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenType {
     /// Keyword or Identifier.
@@ -81,34 +83,14 @@ pub enum TokenType {
     Eof,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct TokenSpan {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl TokenSpan {
-    pub fn new(start: usize, end: usize) -> Self {
-        TokenSpan { start, end }
-    }
-
-    pub fn append(&mut self, len: usize) {
-        self.end += len;
-    }
-
-    pub fn empty(&self) -> bool {
-        self.start == self.end
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
-    t: TokenType,
-    span: TokenSpan,
+    pub t: TokenType,
+    pub span: Span,
 }
 
 impl Token {
-    pub fn new(t: TokenType, span: TokenSpan) -> Self {
+    pub fn new(t: TokenType, span: Span) -> Self {
         Token { t, span }
     }
 }

@@ -1,5 +1,28 @@
-use crate::tokenizer::token::TokenSpan;
 use std::str::from_utf8_unchecked;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn new(start: usize, end: usize) -> Self {
+        Span { start, end }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Position {
+    pub line: usize,
+    pub col: usize,
+}
+
+impl Position {
+    pub fn new(line: usize, col: usize) -> Position {
+        Position { line, col }
+    }
+}
 
 pub struct Utf8Iter<'a> {
     raw: &'a [u8],
@@ -8,7 +31,7 @@ pub struct Utf8Iter<'a> {
     peeked: char,
     /// byte-length of peeked char
     peeked_len: u8,
-    /// for cutting TokenSpan
+    /// for cutting Span
     pinned: usize,
 }
 
@@ -25,19 +48,19 @@ impl<'a> Utf8Iter<'a> {
 }
 
 impl<'a> Utf8Iter<'a> {
-    #[inline(always)]
+    #[inline]
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
-    #[inline(always)]
-    pub fn slice(&self, span: &TokenSpan) -> &'a str {
+    #[inline]
+    pub fn slice(&self, span: &Span) -> &'a str {
         unsafe { from_utf8_unchecked(&self.raw[span.start..span.end]) }
     }
 
-    #[inline(always)]
-    pub fn span_from(&self, start: usize) -> TokenSpan {
-        TokenSpan::new(start, self.cursor)
+    #[inline]
+    pub fn slice_from_to(&self, from: usize, to: usize) -> &'a str {
+        unsafe { from_utf8_unchecked(&self.raw[from..to]) }
     }
 
     #[inline]
@@ -46,8 +69,41 @@ impl<'a> Utf8Iter<'a> {
     }
 
     #[inline]
-    pub fn cut_span(&self) -> TokenSpan {
-        TokenSpan::new(self.pinned, self.cursor)
+    pub fn from_pinned(&self) -> Span {
+        Span::new(self.pinned, self.cursor)
+    }
+
+    pub fn get_pos(&self, cursor: usize) -> Position {
+        let mut before = self.slice_from_to(0, cursor).chars().peekable();
+
+        let mut col = 1usize;
+        let mut line = 1usize;
+
+        while let Some(ch) = before.next() {
+            match ch {
+                '\r' => {
+                    before.next_if_eq(&'\n');
+                    line += 1;
+                    col = 1;
+                }
+                '\n' => {
+                    line += 1;
+                    col = 1;
+                }
+                '\t' => {
+                    col += 4;
+                }
+                _ => {
+                    col += 1;
+                }
+            }
+        }
+
+        Position::new(line, col)
+    }
+
+    pub fn get_current_pos(&self) -> Position {
+        self.get_pos(self.cursor)
     }
 }
 
@@ -120,7 +176,7 @@ impl<'a> Utf8Iter<'a> {
     }
 
     #[inline]
-    pub fn take_while<P>(&mut self, mut predicate: P) -> TokenSpan
+    pub fn take_while<P>(&mut self, mut predicate: P) -> Span
     where
         P: FnMut(char) -> bool,
     {
@@ -134,7 +190,7 @@ impl<'a> Utf8Iter<'a> {
             }
             break;
         }
-        TokenSpan::new(start, self.cursor)
+        Span::new(start, self.cursor)
     }
 
     #[inline]
@@ -185,10 +241,10 @@ const fn utf8_acc_cont_byte(ch: u32, byte: u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenizer::utf8_iter::Utf8Iter;
+    use crate::tokenizer::utf8_iter::{Position, Utf8Iter};
 
     #[test]
-    fn test_utf8iter() {
+    fn test_utf8iter_peek_next() {
         let raw = "hello world 你好世界 ❤";
         let mut iter = Utf8Iter::new(raw);
         assert_eq!(iter.peek(), Some('h'));
@@ -209,5 +265,31 @@ mod tests {
         assert_eq!(iter.next(), Some('❤'));
         assert_eq!(iter.next(), None);
         assert_eq!(iter.peek(), None);
+    }
+
+    #[test]
+    fn test_utf8iter_pos() {
+        let raw = "select * \n\t你好 ❤\r\n1";
+        let mut iter = Utf8Iter::new(raw);
+        iter.skip_while(|ch| ch != ' ');
+        assert_eq!(iter.get_current_pos(), Position::new(1, 7));
+        iter.next(); // consume ' '
+        iter.next(); // consume '*'
+        iter.next(); // consume ' '
+        assert_eq!(iter.get_current_pos(), Position::new(1, 10));
+        iter.next(); // consume '\n'
+        assert_eq!(iter.get_current_pos(), Position::new(2, 1));
+        iter.next(); // consume '\t'
+        assert_eq!(iter.get_current_pos(), Position::new(2, 5));
+        iter.next(); // consume '你'
+        iter.next(); // consume '好'
+        assert_eq!(iter.get_current_pos(), Position::new(2, 7));
+        iter.next(); // consume ' '
+        iter.next(); // consume heart
+        assert_eq!(iter.get_current_pos(), Position::new(2, 9));
+        iter.next(); // consume '\r'
+        iter.next(); // consume '\n'
+        assert_eq!(iter.get_current_pos(), Position::new(3, 1));
+        assert_eq!(iter.next(), Some('1'));
     }
 }
