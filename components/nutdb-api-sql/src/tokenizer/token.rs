@@ -13,6 +13,8 @@ pub enum TokenType {
     /// Config Identifiers. e.g. `@max_thread`.
     /// The leading at symbol is removed.
     ConfigIdentifier,
+    /// Query Parameters. e.g. `$1`.
+    QueryParameter,
     /// String literals. e.g. `"hello"` or `'world'`.
     StringLiteral,
     /// Numeric int literal. e.g. `1`.
@@ -96,8 +98,19 @@ impl Token {
 }
 
 impl Token {
+    #[inline(always)]
     pub fn is_whitespace(&self) -> bool {
         // regard comment as whitespace too
         matches!(self.t, TokenType::Whitespace | TokenType::Comment)
+    }
+
+    #[inline(always)]
+    pub fn maybe_keyword(&self) -> bool {
+        self.t == TokenType::KeywordOrIdentifier
+    }
+
+    #[inline(always)]
+    pub fn is_eof(&self) -> bool {
+        self.t == TokenType::Eof
     }
 }

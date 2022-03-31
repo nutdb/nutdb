@@ -15,10 +15,5 @@ documentation = "https://docs.rs/nutdb-api-sql"
 nutdb-api = { path = "../nutdb-api", version = "0.1.0" }
 
 thiserror = "1.0"
-phf = { version = "0.10", features = ["macros"] }
 
 [dev-dependencies]
-insta = "1.12"
-
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = { version = "0.8" }

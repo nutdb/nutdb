@@ -1,9 +1,16 @@
+use std::fmt;
 use std::str::from_utf8_unchecked;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
+}
+
+impl Span {
+    pub fn is_empty(&self) -> bool {
+        self.end == self.start
+    }
 }
 
 impl Span {
@@ -21,6 +28,12 @@ pub struct Position {
 impl Position {
     pub fn new(line: usize, col: usize) -> Position {
         Position { line, col }
+    }
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "line {} col {}", self.line, self.col)
     }
 }
 
@@ -69,7 +82,7 @@ impl<'a> Utf8Iter<'a> {
     }
 
     #[inline]
-    pub fn from_pinned(&self) -> Span {
+    pub fn cut_from_pinned(&self) -> Span {
         Span::new(self.pinned, self.cursor)
     }
 

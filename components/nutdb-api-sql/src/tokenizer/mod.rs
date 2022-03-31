@@ -1,6 +1,6 @@
-pub use error::TokenizeError;
+pub use error::{TokenizeError, TokenizeErrorType};
 pub use token::{Token, TokenType};
-use utf8_iter::{Utf8Iter};
+use utf8_iter::Utf8Iter;
 pub use utf8_iter::{Position, Span};
 
 mod error;
@@ -20,20 +20,23 @@ impl<'a> Tokenizer<'a> {
             source: Utf8Iter::new(raw),
         }
     }
+}
 
-    pub fn token_str(&self, token: &Token) -> &'a str {
-        self.source.slice(&token.span)
-    }
-
-    pub fn token_pos(&self, token: &Token) -> Position {
-        self.source.get_pos(token.span.start)
+impl<'a> Tokenizer<'a> {
+    #[inline(always)]
+    pub fn source(&self) -> &Utf8Iter<'a> {
+        &self.source
     }
 }
 
 macro_rules! emit_error {
-    ($t:ident $($init:tt)?) => {
-        Err(TokenizeError::$t $($init)?)
-    }
+    ($self:ident, $t:ident, $ctx:expr) => {
+        Err(TokenizeError {
+            t: TokenizeErrorType::$t,
+            ctx: $ctx.into(),
+            pos: $self.source.get_current_pos(),
+        })
+    };
 }
 
 macro_rules! consume_peeked_and_emit_token {
@@ -43,7 +46,7 @@ macro_rules! consume_peeked_and_emit_token {
     }};
     ($self:ident, $t:ident) => {{
         $self.source.consume_peeked();
-        Ok(Token::new(TokenType::$t, $self.source.from_pinned()))
+        Ok(Token::new(TokenType::$t, $self.source.cut_from_pinned()))
     }};
 }
 
@@ -52,7 +55,7 @@ macro_rules! emit_token {
         Ok(Token::new(TokenType::$t, $span))
     }};
     ($self:ident, $t:ident) => {{
-        Ok(Token::new(TokenType::$t, $self.source.from_pinned()))
+        Ok(Token::new(TokenType::$t, $self.source.cut_from_pinned()))
     }};
 }
 
@@ -96,7 +99,7 @@ impl Tokenizer<'_> {
                 '@' => self.tokenize_config_identifier(),
                 '\'' => self.tokenize_single_quoted_string(),
                 '"' => self.tokenize_double_quoted_string(),
-                _ => emit_error!(UnexpectedChar { ch: ch.into() }),
+                _ => emit_error!(self, UnexpectedChar, ch),
             },
         }
     }
@@ -117,30 +120,47 @@ macro_rules! tokenize_string_literal {
                     Some(ch) => {
                         match ch {
                             $quote => {
+                                let span = self.source.cut_from_pinned();
                                 self.source.consume_peeked();
                                 if matches!(self.source.peek(), Some($quote)) {
                                     // support unescape `''` to `'` and `""` to `"`
                                     self.source.consume_peeked();
                                 } else {
                                     // end of literal
-                                    break emit_token!(self, StringLiteral);
+                                    break emit_token!(StringLiteral on span);
                                 }
                             }
                             '\\' => {
                                 self.source.consume_peeked();
                                 // consume next char too
-                                self.source.next();
+                                let next_ch = self.source.next();
+                                // handle \r\n
+                                if matches!(next_ch, Some('\r')) {
+                                    if matches!(self.source.peek(), Some('\n')) {
+                                        self.source.consume_peeked();
+                                    }
+                                };
                             }
                             // `\r` and `\n` are supported in string but should be escaped.
-                            '\r' => break emit_error!(UnexpectedChar { ch: "\\r".into() }),
-                            '\n' => break emit_error!(UnexpectedChar { ch: "\\n".into() }),
+                            '\r' => {
+                                break emit_error!(
+                                    self,
+                                    UnexpectedChar,
+                                    "'\\r' in string is supported but should be escaped by '\\'"
+                                )
+                            }
+                            '\n' => {
+                                break emit_error!(
+                                    self,
+                                    UnexpectedChar,
+                                    "'\\n' in string is supported but should be escaped by '\\'"
+                                )
+                            }
                             _ => self.source.consume_peeked(),
                         }
                     }
                     None => {
-                        break emit_error!(UnexpectedEOF {
-                            ctx: "string literal".into()
-                        })
+                        break emit_error!(self, UnexpectedEOF, "string literal is not complete")
                     }
                 }
             }
@@ -178,52 +198,127 @@ impl Tokenizer<'_> {
                     // is float
                 }
                 // numbers starts with `0` without dot are not allowed
-                Some(ch) => return emit_error!(UnexpectedChar { ch: ch.into() }),
+                Some(ch) => {
+                    return emit_error!(
+                        self,
+                        UnexpectedChar,
+                        format!("'{}' is invalid in numeric literal", ch)
+                    );
+                }
             }
         }
 
         match self.source.peek() {
             // accept dot
             Some('.') => self.source.consume_peeked(),
-            _ => return emit_token!(IntegerLiteral on span),
+            next_ch => {
+                return if let Some(ch) = get_char_if_invalid_end_of_numeric(next_ch) {
+                    emit_error!(
+                        self,
+                        UnexpectedChar,
+                        format!("'{}' cannot be a part of integer literal", ch)
+                    )
+                } else {
+                    emit_token!(IntegerLiteral on span)
+                };
+            }
         }
 
         // consume fractional part
         self.source.skip_while(|item| matches!(item, '0'..='9'));
 
-        let span = self.source.from_pinned();
+        let span = self.source.cut_from_pinned();
 
         if self.source.slice(&span) == "." {
             // dot
             emit_token!(Dot on span)
         } else {
-            emit_token!(FloatLiteral on span)
+            if let Some(ch) = get_char_if_invalid_end_of_numeric(self.source.peek()) {
+                emit_error!(
+                    self,
+                    UnexpectedChar,
+                    format!("'{}' cannot be a part of float literal", ch)
+                )
+            } else {
+                emit_token!(FloatLiteral on span)
+            }
         }
     }
 
     fn tokenize_keyword_or_identifier(&mut self) -> TokenizeResult {
-        let span = self.take_identifier();
-        emit_token!(KeywordOrIdentifier on span)
+        debug_assert!(!matches!(self.source.peek(), Some('0'..='9')));
+
+        let span = self
+            .source
+            .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
+
+        if let Some(ch) = get_char_if_invalid_end_of_identifier(self.source.peek()) {
+            emit_error!(
+                self,
+                UnexpectedChar,
+                format!("'{}' cannot be a part of identifier or keyword", ch)
+            )
+        } else {
+            emit_token!(KeywordOrIdentifier on span)
+        }
     }
 
     fn tokenize_variable_identifier(&mut self) -> TokenizeResult {
         debug_assert!(matches!(self.source.peek(), Some('$')));
 
-        // remove '$'
+        // consume prefix
         self.source.consume_peeked();
 
-        let span = self.take_identifier();
-        emit_token!(VariableIdentifier on span)
+        // query parameter
+        if matches!(self.source.peek(), Some('0'..='9')) {
+            let span = self.source.take_while(|item| matches!(item, '0'..='9'));
+            // at least one digit so no need to check span.is_empty
+            return emit_token!(QueryParameter on span);
+        }
+
+        let span = self
+            .source
+            .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
+        if span.is_empty() {
+            emit_error!(self, Incomplete, "identifier should have name")
+        } else if let Some(ch) = get_char_if_invalid_end_of_identifier(self.source.peek()) {
+            emit_error!(
+                self,
+                UnexpectedChar,
+                format!("'{}' cannot be a part of variable identifier", ch)
+            )
+        } else {
+            emit_token!(VariableIdentifier on span)
+        }
     }
 
     fn tokenize_config_identifier(&mut self) -> TokenizeResult {
         debug_assert!(matches!(self.source.peek(), Some('@')));
 
-        // remove '@'
+        // consume prefix
         self.source.consume_peeked();
 
-        let span = self.take_identifier();
-        emit_token!(ConfigIdentifier on span)
+        if matches!(self.source.peek(), Some('0'..='9')) {
+            return emit_error!(
+                self,
+                UnexpectedChar,
+                "config identifier cannot starts with numbers"
+            );
+        }
+        let span = self
+            .source
+            .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
+        if span.is_empty() {
+            emit_error!(self, Incomplete, "identifier should have name")
+        } else if let Some(ch) = get_char_if_invalid_end_of_identifier(self.source.peek()) {
+            emit_error!(
+                self,
+                UnexpectedChar,
+                format!("'{}' cannot be a part of config identifier", ch)
+            )
+        } else {
+            emit_token!(ConfigIdentifier on span)
+        }
     }
 
     fn tokenize_delimited_identifier(&mut self) -> TokenizeResult {
@@ -232,17 +327,32 @@ impl Tokenizer<'_> {
         // remove '`'
         self.source.consume_peeked();
 
-        let span = self.take_identifier();
+        let span = self
+            .source
+            .take_while(|item| !matches!(item, '`' | '\r' | '\n'));
+
+        if span.is_empty() {
+            return emit_error!(
+                self,
+                Incomplete,
+                "delimited identifier cannot be an empty string"
+            );
+        }
+
         match self.source.peek() {
-            Some('`') => self.source.consume_peeked(),
-            Some(ch) => return emit_error!(UnexpectedChar { ch: ch.into() }),
-            None => {
-                return emit_error!(UnexpectedEOF {
-                    ctx: "delimited identifier".into()
-                })
+            Some('`') => {
+                self.source.consume_peeked();
+                emit_token!(DelimitedIdentifier on span)
+            }
+            Some(_) => emit_error!(
+                self,
+                UnexpectedChar,
+                "'\\r' or '\\n' cannot be a part of delimited identifier"
+            ),
+            _ => {
+                emit_error!(self, UnexpectedEOF, "delimited identifier is not complete")
             }
         }
-        emit_token!(DelimitedIdentifier on span)
     }
 
     fn tokenize_inline_comment_or_minus(&mut self) -> TokenizeResult {
@@ -279,7 +389,7 @@ impl Tokenizer<'_> {
             self.source.consume_peeked();
             emit_token!(self, NotEq)
         } else {
-            emit_error!(UnexpectedChar { ch: "!".into() })
+            emit_error!(self, UnexpectedChar, "'!' can only be used with '='")
         }
     }
 
@@ -325,12 +435,11 @@ impl Tokenizer<'_> {
         // 2 = end
         let mut comment_end = 0u8;
         loop {
+            if comment_end == 2 {
+                break;
+            }
             match self.source.peek() {
                 Some(ch) => {
-                    if comment_end == 2 {
-                        break;
-                    }
-
                     self.source.consume_peeked();
                     if comment_end == 1 && ch == '/' {
                         comment_end = 2;
@@ -342,9 +451,7 @@ impl Tokenizer<'_> {
                     }
                 }
                 None => {
-                    return emit_error!(UnexpectedEOF {
-                        ctx: "multiline comment".into()
-                    })
+                    return emit_error!(self, UnexpectedEOF, "block comment is not complete");
                 }
             }
         }
@@ -356,14 +463,273 @@ impl Tokenizer<'_> {
     /// Skips whitespaces and returns whether skipped whitespaces.
     fn skip_whitespace(&mut self) -> bool {
         let start = self.source.cursor();
-        self.source
-            .skip_while(|item| matches!(item, ' ' | '\t' | '\n' | '\r'));
+        self.source.skip_while(is_whitespace_char);
         start != self.source.cursor()
     }
+}
 
-    #[inline]
-    fn take_identifier(&mut self) -> Span {
-        self.source
-            .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'))
+#[inline(always)]
+fn is_whitespace_char(ch: char) -> bool {
+    matches!(ch, ' ' | '\t' | '\n' | '\r')
+}
+
+#[inline(always)]
+fn get_char_if_invalid_end_of_identifier(ch: Option<char>) -> Option<char> {
+    match ch {
+        None
+        | Some(
+            '.' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' | '!' | ':' | ','
+            | ';' | '[' | ']' | '(' | ')' | '{' | '}' | '\t' | '\n' | '\r' | ' ',
+        ) => None,
+        _ => ch,
+    }
+}
+
+#[inline(always)]
+fn get_char_if_invalid_end_of_numeric(ch: Option<char>) -> Option<char> {
+    match ch {
+        None
+        | Some(
+            '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' | '!' | ':' | ',' | ';'
+            | ']' | ')' | '}' | '\t' | '\n' | '\r' | ' ',
+        ) => None,
+        _ => ch,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::tokenizer::{Token, TokenType, Tokenizer};
+    use TokenType::*;
+
+    fn collect_tokens(tn: &mut Tokenizer<'_>) -> Vec<Token> {
+        let mut result = vec![];
+        while let Ok(t) = tn.next_token() {
+            if t.is_eof() {
+                break;
+            }
+            result.push(t);
+        }
+        result
+    }
+
+    fn assert_tokens_ignore_whitespace(actual: &Vec<Token>, expected: &Vec<TokenType>) {
+        let mut i = 0;
+        for token in actual {
+            if token.t != Whitespace {
+                assert_eq!(token.t, expected[i]);
+                i += 1;
+            }
+        }
+    }
+
+    fn get_str<'a>(t: &Tokenizer<'a>, token: &Token) -> &'a str {
+        t.source.slice(&token.span)
+    }
+
+    #[test]
+    fn tokenize_whitespaces() {
+        let test_case = ["    ", "\t\t", "\n", "\r\n", "\r"].join(" ");
+        let tokens = collect_tokens(&mut Tokenizer::new(&test_case));
+        // all whitespaces are combined into one
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].t, Whitespace);
+    }
+
+    #[test]
+    fn tokenize_numerics() {
+        let test_case = [
+            ("510", IntegerLiteral), // integer
+            ("0.123", FloatLiteral), // float
+            (".123", FloatLiteral),  // float
+            ("1.", FloatLiteral),    // float
+            ("0x123", HexLiteral),   // hex
+        ];
+        for case in test_case {
+            let token = Tokenizer::new(case.0).next_token().unwrap();
+            assert_eq!(token.t, case.1);
+        }
+    }
+
+    #[test]
+    fn tokenize_numerics_fail() {
+        assert!(Tokenizer::new("1d").next_token().is_err());
+        // \n and \r should be escaped
+        assert!(Tokenizer::new("1好").next_token().is_err());
+        assert!(Tokenizer::new("1.d").next_token().is_err());
+    }
+
+    #[test]
+    fn tokenize_strings() {
+        let test_case = [
+            (r#""hello""#, "hello"),            // if double-quoted
+            ("'hello'", "hello"),               // if single-quoted
+            ("'he''llo'", "he''llo"),           // if escape '
+            (r#""he""llo""#, r#"he""llo"#),     // if escape "
+            ("'h\\t i\\r\\n'", "h\\t i\\r\\n"), // if escape \t or \r\n
+            ("\"\\\n\"", "\\\n"),               // if escape \n
+        ];
+        for case in test_case {
+            let mut t = Tokenizer::new(case.0);
+            let token = t.next_token().unwrap();
+            assert_eq!(token.t, StringLiteral);
+            assert_eq!(get_str(&t, &token), case.1);
+        }
+    }
+
+    #[test]
+    fn tokenize_strings_fail() {
+        assert!(Tokenizer::new(r#""hello'"#).next_token().is_err());
+        // \n and \r should be escaped
+        assert!(Tokenizer::new("\"\n\"").next_token().is_err());
+        assert!(Tokenizer::new("\"\r\"").next_token().is_err());
+    }
+
+    #[test]
+    fn tokenize_identifiers() {
+        let test_case = [
+            ("hello_world", "hello_world", KeywordOrIdentifier), // bare
+            ("`select`", "select", DelimitedIdentifier),         // delimited
+            ("`你 好`", "你 好", DelimitedIdentifier),       // delimited
+            ("$0", "0", QueryParameter),                         // query parameter
+            ("$a", "a", VariableIdentifier),                     // variable
+            ("@a", "a", ConfigIdentifier),                       // config
+        ];
+        for case in test_case {
+            let mut t = Tokenizer::new(case.0);
+            let token = t.next_token().unwrap();
+            assert_eq!(token.t, case.2);
+            assert_eq!(get_str(&t, &token), case.1);
+        }
+    }
+
+    #[test]
+    fn tokenize_identifiers_fail() {
+        // empty
+        assert!(Tokenizer::new("$").next_token().is_err());
+        assert!(Tokenizer::new("``").next_token().is_err());
+        assert!(Tokenizer::new("@").next_token().is_err());
+        // not alphanumeric nor _
+        assert!(Tokenizer::new("你好").next_token().is_err());
+        assert!(Tokenizer::new("$你好").next_token().is_err());
+        assert!(Tokenizer::new("@你好").next_token().is_err());
+        // unexpected char
+        assert!(Tokenizer::new("hello_你好").next_token().is_err());
+    }
+
+    #[test]
+    fn tokenize_comment() {
+        let test_case = [
+            ("hello -- world", 2, "world"),     // inline
+            ("/* hello */", 0, " hello "),      // block
+            ("hello /* \n */world", 2, " \n "), // multiline block
+        ];
+
+        for case in test_case {
+            let mut t = Tokenizer::new(case.0);
+            let tokens = collect_tokens(&mut t);
+            assert_eq!(get_str(&t, &tokens[case.1]), case.2);
+        }
+    }
+
+    #[test]
+    fn tokenize_comment_fail() {
+        assert!(Tokenizer::new("/*").next_token().is_err());
+        assert!(Tokenizer::new("/* /").next_token().is_err());
+    }
+
+    #[test]
+    fn tokenize_symbols() {
+        let test_case = [
+            (".", Dot),
+            ("+", Plus),
+            ("-", Minus),
+            ("*", Mul),
+            ("/", Div),
+            ("%", Mod),
+            ("&", BitAnd),
+            ("|", BitOr),
+            ("^", BitXor),
+            (">>", BitRShift),
+            ("<<", BitLShift),
+            ("=", Eq),
+            ("!=", NotEq),
+            ("<>", NotEq),
+            (">", Gt),
+            (">=", GtEq),
+            ("<", Lt),
+            ("<=", LtEq),
+            (":", Colon),
+            (",", Comma),
+            (";", SemiColon),
+            ("[", LBracket),
+            ("]", RBracket),
+            ("{", LBrace),
+            ("}", RBrace),
+            ("(", LParen),
+            (")", RParen),
+        ];
+
+        for case in test_case {
+            let mut t = Tokenizer::new(case.0);
+            assert_eq!(t.next_token().unwrap().t, case.1);
+        }
+    }
+
+    #[test]
+    fn tokenize_symbol_fail() {
+        assert!(Tokenizer::new("!").next_token().is_err());
+    }
+
+    #[test]
+    fn tokenize_simple_query() {
+        let tokens = collect_tokens(&mut Tokenizer::new(
+            "
+WITH $ev_type = IF $0 = 0 THEN 'EventA' ELSE 'EventB' END
+SELECT *
+FROM
+(
+    SELECT count() AS `c`
+    FROM events
+    WHERE event_type = $ev_type
+    GROUP BY name
+)",
+        ));
+        assert_tokens_ignore_whitespace(
+            &tokens,
+            &vec![
+                KeywordOrIdentifier, // with
+                VariableIdentifier,  // $ev_type
+                Eq,
+                KeywordOrIdentifier, // if
+                QueryParameter,      // $0
+                Eq,
+                IntegerLiteral,      // 0
+                KeywordOrIdentifier, // then
+                StringLiteral,       // EventA
+                KeywordOrIdentifier, // else
+                KeywordOrIdentifier, // EventB
+                KeywordOrIdentifier, // end
+                KeywordOrIdentifier, // select
+                Mul,
+                KeywordOrIdentifier, // from
+                LParen,
+                KeywordOrIdentifier, // select
+                KeywordOrIdentifier, // count
+                LParen,
+                RParen,
+                KeywordOrIdentifier, // as
+                KeywordOrIdentifier, // c
+                KeywordOrIdentifier, // from
+                KeywordOrIdentifier, // events
+                KeywordOrIdentifier, // where
+                KeywordOrIdentifier, // event_type
+                Eq,
+                VariableIdentifier,  // $ev_type
+                KeywordOrIdentifier, // group
+                KeywordOrIdentifier, // by
+                KeywordOrIdentifier, // name
+            ],
+        )
     }
 }
