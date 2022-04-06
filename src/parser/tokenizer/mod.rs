@@ -29,6 +29,7 @@ impl<'a> Tokenizer<'a> {
     }
 }
 
+/// `emit_error!(self, error_type, "ctx")`
 macro_rules! emit_error {
     ($self:ident, $t:ident, $ctx:expr) => {
         Err(TokenizeError {
@@ -39,17 +40,19 @@ macro_rules! emit_error {
     };
 }
 
+/// `consume_peeked_and_emit_token!(self, token_type)`
+///
+/// Calls `self.source_consume_peeked()` internally.
 macro_rules! consume_peeked_and_emit_token {
-    ($self:ident, $t:ident on $span:expr) => {{
-        $self.source.consume_peeked();
-        Ok(Token::new(TokenType::$t, $span))
-    }};
     ($self:ident, $t:ident) => {{
         $self.source.consume_peeked();
         Ok(Token::new(TokenType::$t, $self.source.cut_from_pinned()))
     }};
 }
 
+/// `emit_token!(token_type on span)`
+/// or
+/// `emit_token!(self, token_type)`
 macro_rules! emit_token {
     ($t:ident on $span:expr) => {{
         Ok(Token::new(TokenType::$t, $span))
@@ -95,18 +98,22 @@ impl Tokenizer<'_> {
                 'a'..='z' | 'A'..='Z' | '_' => self.tokenize_keyword_or_identifier(),
                 '`' => self.tokenize_delimited_identifier(),
                 '.' | '0'..='9' => self.tokenize_dot_or_numeric(),
-                '$' => self.tokenize_variable_identifier(),
+                '$' => self.tokenize_query_parameter(),
                 '@' => self.tokenize_config_identifier(),
                 '\'' => self.tokenize_single_quoted_string(),
                 '"' => self.tokenize_double_quoted_string(),
-                _ => emit_error!(self, UnexpectedChar, ch),
+                _ => emit_error!(
+                    self,
+                    UnexpectedChar,
+                    format!("'{}' is invalid outside string literal", ch)
+                ),
             },
         }
     }
 }
 
-macro_rules! tokenize_string_literal {
-    ($fn_name:ident, $quote:literal) => {
+macro_rules! tokenize_string_literal_impl {
+    ($fn_name:ident, $quote:literal, $token:ident) => {
         fn $fn_name(&mut self) -> TokenizeResult {
             debug_assert!(matches!(self.source.peek(), Some($quote)));
 
@@ -123,11 +130,11 @@ macro_rules! tokenize_string_literal {
                                 let span = self.source.cut_from_pinned();
                                 self.source.consume_peeked();
                                 if matches!(self.source.peek(), Some($quote)) {
-                                    // support unescape `''` to `'` and `""` to `"`
+                                    // support unescape `''` to `'` or `""` to `"`
                                     self.source.consume_peeked();
                                 } else {
                                     // end of literal
-                                    break emit_token!(StringLiteral on span);
+                                    break emit_token!($token on span);
                                 }
                             }
                             '\\' => {
@@ -146,14 +153,14 @@ macro_rules! tokenize_string_literal {
                                 break emit_error!(
                                     self,
                                     UnexpectedChar,
-                                    "'\\r' in string is supported but should be escaped by '\\'"
+                                    "\\r in string is supported but should be escaped by '\\'"
                                 )
                             }
                             '\n' => {
                                 break emit_error!(
                                     self,
                                     UnexpectedChar,
-                                    "'\\n' in string is supported but should be escaped by '\\'"
+                                    "\\n in string is supported but should be escaped by '\\'"
                                 )
                             }
                             _ => self.source.consume_peeked(),
@@ -170,8 +177,16 @@ macro_rules! tokenize_string_literal {
 
 // All functions assume that there is a peeked char in iter.
 impl Tokenizer<'_> {
-    tokenize_string_literal!(tokenize_single_quoted_string, '\'');
-    tokenize_string_literal!(tokenize_double_quoted_string, '"');
+    tokenize_string_literal_impl!(
+        tokenize_single_quoted_string,
+        '\'',
+        SingleQuotedStringLiteral
+    );
+    tokenize_string_literal_impl!(
+        tokenize_double_quoted_string,
+        '"',
+        DoubleQuotedStringLiteral
+    );
 
     fn tokenize_dot_or_numeric(&mut self) -> TokenizeResult {
         debug_assert!(matches!(self.source.peek(), Some('.' | '0'..='9')));
@@ -232,21 +247,22 @@ impl Tokenizer<'_> {
         if self.source.slice(&span) == "." {
             // dot
             emit_token!(Dot on span)
+        } else if let Some(ch) = get_char_if_invalid_end_of_numeric(self.source.peek()) {
+            emit_error!(
+                self,
+                UnexpectedChar,
+                format!("'{}' cannot be a part of float literal", ch)
+            )
         } else {
-            if let Some(ch) = get_char_if_invalid_end_of_numeric(self.source.peek()) {
-                emit_error!(
-                    self,
-                    UnexpectedChar,
-                    format!("'{}' cannot be a part of float literal", ch)
-                )
-            } else {
-                emit_token!(FloatLiteral on span)
-            }
+            emit_token!(FloatLiteral on span)
         }
     }
 
     fn tokenize_keyword_or_identifier(&mut self) -> TokenizeResult {
-        debug_assert!(!matches!(self.source.peek(), Some('0'..='9')));
+        debug_assert!(matches!(
+            self.source.peek(),
+            Some('a'..='z' | 'A'..='Z' | '_')
+        ));
 
         let span = self
             .source
@@ -259,36 +275,8 @@ impl Tokenizer<'_> {
                 format!("'{}' cannot be a part of identifier or keyword", ch)
             )
         } else {
+            // no need to check span.is_empty() because this token has one char at least
             emit_token!(KeywordOrIdentifier on span)
-        }
-    }
-
-    fn tokenize_variable_identifier(&mut self) -> TokenizeResult {
-        debug_assert!(matches!(self.source.peek(), Some('$')));
-
-        // consume prefix
-        self.source.consume_peeked();
-
-        // query parameter
-        if matches!(self.source.peek(), Some('0'..='9')) {
-            let span = self.source.take_while(|item| matches!(item, '0'..='9'));
-            // at least one digit so no need to check span.is_empty
-            return emit_token!(QueryParameter on span);
-        }
-
-        let span = self
-            .source
-            .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
-        if span.is_empty() {
-            emit_error!(self, Incomplete, "identifier should have name")
-        } else if let Some(ch) = get_char_if_invalid_end_of_identifier(self.source.peek()) {
-            emit_error!(
-                self,
-                UnexpectedChar,
-                format!("'{}' cannot be a part of variable identifier", ch)
-            )
-        } else {
-            emit_token!(VariableIdentifier on span)
         }
     }
 
@@ -308,14 +296,14 @@ impl Tokenizer<'_> {
         let span = self
             .source
             .take_while(|item| matches!(item, 'a'..='z' | 'A'..='Z' | '_' | '0'..='9'));
-        if span.is_empty() {
-            emit_error!(self, Incomplete, "identifier should have name")
-        } else if let Some(ch) = get_char_if_invalid_end_of_identifier(self.source.peek()) {
+        if let Some(ch) = get_char_if_invalid_end_of_identifier(self.source.peek()) {
             emit_error!(
                 self,
                 UnexpectedChar,
                 format!("'{}' cannot be a part of config identifier", ch)
             )
+        } else if span.is_empty() {
+            emit_error!(self, Incomplete, "identifier should have name")
         } else {
             emit_token!(ConfigIdentifier on span)
         }
@@ -349,9 +337,29 @@ impl Tokenizer<'_> {
                 UnexpectedChar,
                 "'\\r' or '\\n' cannot be a part of delimited identifier"
             ),
-            _ => {
+            None => {
                 emit_error!(self, UnexpectedEOF, "delimited identifier is not complete")
             }
+        }
+    }
+
+    fn tokenize_query_parameter(&mut self) -> TokenizeResult {
+        debug_assert!(matches!(self.source.peek(), Some('$')));
+
+        // consume prefix
+        self.source.consume_peeked();
+
+        let span = self.source.take_while(|item| matches!(item, '0'..='9'));
+        if let Some(ch) = get_char_if_invalid_end_of_query_parameter(self.source.peek()) {
+            emit_error!(
+                self,
+                UnexpectedChar,
+                format!("'{}' cannot be a part of query parameter", ch)
+            )
+        } else if span.is_empty() {
+            emit_error!(self, Incomplete, "query parameter should have an index")
+        } else {
+            emit_token!(QueryParameter on span)
         }
     }
 
@@ -478,8 +486,36 @@ fn get_char_if_invalid_end_of_identifier(ch: Option<char>) -> Option<char> {
     match ch {
         None
         | Some(
-            '.' | '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' | '!' | ':' | ','
-            | ';' | '[' | ']' | '(' | ')' | '{' | '}' | '\t' | '\n' | '\r' | ' ',
+            // binary operator
+            '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' |
+            // leading char of !=
+            '!' |
+            // delimiter without `:`, because identifiers cannot be key of map
+            '.' | ',' | ';' |
+            // pairs
+            '[' | ']' | '(' | ')' | '{' | '}' |
+            // whitespace
+            '\t' | '\n' | '\r' | ' ',
+        ) => None,
+        _ => ch,
+    }
+}
+
+#[inline(always)]
+fn get_char_if_invalid_end_of_query_parameter(ch: Option<char>) -> Option<char> {
+    match ch {
+        None
+        | Some(
+            // binary operator
+            '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' |
+            // leading char of !=
+            '!' |
+            // delimiter
+            ',' | ':' | ';' |
+            // close
+            ']' | ')' | '}' |
+            // whitespace
+            '\t' | '\n' | '\r' | ' ',
         ) => None,
         _ => ch,
     }
@@ -490,8 +526,16 @@ fn get_char_if_invalid_end_of_numeric(ch: Option<char>) -> Option<char> {
     match ch {
         None
         | Some(
-            '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' | '!' | ':' | ',' | ';'
-            | ']' | ')' | '}' | '\t' | '\n' | '\r' | ' ',
+            // binary operator
+            '+' | '-' | '*' | '/' | '%' | '&' | '|' | '^' | '>' | '<' | '=' |
+            // leading char of !=
+            '!' |
+            // delimiter
+            ':' | ',' | ';'
+            // close
+            | ']' | ')' | '}' |
+            // whitespace
+            '\t' | '\n' | '\r' | ' ',
         ) => None,
         _ => ch,
     }
@@ -499,8 +543,9 @@ fn get_char_if_invalid_end_of_numeric(ch: Option<char>) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenizer::{Token, TokenType, Tokenizer};
     use TokenType::*;
+
+    use crate::parser::tokenizer::{Token, TokenType, Tokenizer};
 
     fn collect_tokens(tn: &mut Tokenizer<'_>) -> Vec<Token> {
         let mut result = vec![];
@@ -562,18 +607,18 @@ mod tests {
     #[test]
     fn tokenize_strings() {
         let test_case = [
-            (r#""hello""#, "hello"),            // if double-quoted
-            ("'hello'", "hello"),               // if single-quoted
-            ("'he''llo'", "he''llo"),           // if escape '
-            (r#""he""llo""#, r#"he""llo"#),     // if escape "
-            ("'h\\t i\\r\\n'", "h\\t i\\r\\n"), // if escape \t or \r\n
-            ("\"\\\n\"", "\\\n"),               // if escape \n
+            (r#""hello""#, "hello", DoubleQuotedStringLiteral), // if double-quoted
+            ("'hello'", "hello", SingleQuotedStringLiteral),    // if single-quoted
+            ("'he''llo'", "he''llo", SingleQuotedStringLiteral), // if escape '
+            (r#""he""llo""#, r#"he""llo"#, DoubleQuotedStringLiteral), // if escape "
+            ("'h\\t i\\r\\n'", "h\\t i\\r\\n", SingleQuotedStringLiteral), // if escape \t or \r\n
+            ("\"\\\n\"", "\\\n", DoubleQuotedStringLiteral),    // if escape \n
         ];
         for case in test_case {
             let mut t = Tokenizer::new(case.0);
             let token = t.next_token().unwrap();
-            assert_eq!(token.t, StringLiteral);
             assert_eq!(get_str(&t, &token), case.1);
+            assert_eq!(token.t, case.2);
         }
     }
 
@@ -591,8 +636,6 @@ mod tests {
             ("hello_world", "hello_world", KeywordOrIdentifier), // bare
             ("`select`", "select", DelimitedIdentifier),         // delimited
             ("`你 好`", "你 好", DelimitedIdentifier),       // delimited
-            ("$0", "0", QueryParameter),                         // query parameter
-            ("$a", "a", VariableIdentifier),                     // variable
             ("@a", "a", ConfigIdentifier),                       // config
         ];
         for case in test_case {
@@ -606,15 +649,31 @@ mod tests {
     #[test]
     fn tokenize_identifiers_fail() {
         // empty
-        assert!(Tokenizer::new("$").next_token().is_err());
         assert!(Tokenizer::new("``").next_token().is_err());
         assert!(Tokenizer::new("@").next_token().is_err());
         // not alphanumeric nor _
         assert!(Tokenizer::new("你好").next_token().is_err());
-        assert!(Tokenizer::new("$你好").next_token().is_err());
         assert!(Tokenizer::new("@你好").next_token().is_err());
         // unexpected char
         assert!(Tokenizer::new("hello_你好").next_token().is_err());
+    }
+
+    #[test]
+    fn tokenize_query_parameter() {
+        let test_case = [("$0", "0"), ("$01", "01"), ("$9", "9")];
+        for case in test_case {
+            let mut t = Tokenizer::new(case.0);
+            let token = t.next_token().unwrap();
+            assert_eq!(get_str(&t, &token), case.1);
+        }
+    }
+
+    #[test]
+    fn tokenize_query_parameter_fail() {
+        assert!(Tokenizer::new("$").next_token().is_err());
+        assert!(Tokenizer::new("$a").next_token().is_err());
+        assert!(Tokenizer::new("$0a").next_token().is_err());
+        assert!(Tokenizer::new("$_0").next_token().is_err());
     }
 
     #[test]
@@ -685,31 +744,18 @@ mod tests {
     fn tokenize_simple_query() {
         let tokens = collect_tokens(&mut Tokenizer::new(
             "
-WITH $ev_type = IF $0 = 0 THEN 'EventA' ELSE 'EventB' END
 SELECT *
 FROM
 (
     SELECT count() AS `c`
     FROM events
-    WHERE event_type = $ev_type
+    WHERE event_type = $0
     GROUP BY name
 )",
         ));
         assert_tokens_ignore_whitespace(
             &tokens,
             &vec![
-                KeywordOrIdentifier, // with
-                VariableIdentifier,  // $ev_type
-                Eq,
-                KeywordOrIdentifier, // if
-                QueryParameter,      // $0
-                Eq,
-                IntegerLiteral,      // 0
-                KeywordOrIdentifier, // then
-                StringLiteral,       // EventA
-                KeywordOrIdentifier, // else
-                KeywordOrIdentifier, // EventB
-                KeywordOrIdentifier, // end
                 KeywordOrIdentifier, // select
                 Mul,
                 KeywordOrIdentifier, // from
@@ -719,16 +765,17 @@ FROM
                 LParen,
                 RParen,
                 KeywordOrIdentifier, // as
-                KeywordOrIdentifier, // c
+                DelimitedIdentifier, // c
                 KeywordOrIdentifier, // from
                 KeywordOrIdentifier, // events
                 KeywordOrIdentifier, // where
                 KeywordOrIdentifier, // event_type
                 Eq,
-                VariableIdentifier,  // $ev_type
+                QueryParameter,      // $0
                 KeywordOrIdentifier, // group
                 KeywordOrIdentifier, // by
                 KeywordOrIdentifier, // name
+                RParen,
             ],
         )
     }

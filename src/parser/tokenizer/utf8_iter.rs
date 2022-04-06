@@ -254,7 +254,7 @@ const fn utf8_acc_cont_byte(ch: u32, byte: u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::tokenizer::utf8_iter::{Position, Utf8Iter};
+    use crate::parser::tokenizer::utf8_iter::{Position, Utf8Iter};
 
     #[test]
     fn test_utf8iter_peek_next() {

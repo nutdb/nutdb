@@ -1,22 +1,23 @@
-use crate::tokenizer::utf8_iter::Span;
+use derive_more::Display;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::parser::tokenizer::utf8_iter::Span;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 pub enum TokenType {
     /// Keyword or Identifier.
     /// Only part of ascii chars are allowed.
     KeywordOrIdentifier,
     /// Delimited Identifiers. e.g. `` `hello` `` or `` `select` ``.
     DelimitedIdentifier,
-    /// Variable Identifiers. e.g. `$a`.
-    /// The leading dollar symbol is removed.
-    VariableIdentifier,
     /// Config Identifiers. e.g. `@max_thread`.
     /// The leading at symbol is removed.
     ConfigIdentifier,
-    /// Query Parameters. e.g. `$1`.
+    /// Query Parameters. e.g. `$0`.
     QueryParameter,
-    /// String literals. e.g. `"hello"` or `'world'`.
-    StringLiteral,
+    /// String literals. e.g. `'world'`.
+    SingleQuotedStringLiteral,
+    /// String literals. e.g. `"hello"
+    DoubleQuotedStringLiteral,
     /// Numeric int literal. e.g. `1`.
     IntegerLiteral,
     /// Numeric float literal. e.g. `1.1`
