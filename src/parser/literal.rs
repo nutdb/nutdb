@@ -1,6 +1,37 @@
 use crate::parser::SyntaxError;
-use std::num::{NonZeroUsize, ParseIntError};
+use bigdecimal::Num;
+use std::num::ParseIntError;
 use std::str::FromStr;
+
+/// `decimal_from_str!(str)`
+macro_rules! decimal_from_str {
+    ($s:ident) => {
+        BigDecimal::from_str($s).map_err(|e| SyntaxError::InvalidFloatLiteral {
+            literal: $s.to_owned(),
+            source: e,
+        })?
+    };
+}
+
+/// - `integer_from_str!(type, str)`
+/// - `integer_from_str!(hex, type, str)`
+macro_rules! integer_from_str {
+    ($t:ty, $s:ident) => {
+        <$t>::from_str($s).map_err(|e| SyntaxError::InvalidIntegerLiteral {
+            literal: $s.to_owned(),
+            source: e,
+        })?
+    };
+    (hex, $t:ty, $s:ident) => {
+        <$t>::from_str_radix($s, 16).map_err(|e| SyntaxError::InvalidHexLiteral {
+            literal: $s.to_owned(),
+            source: e,
+        })?
+    };
+}
+
+pub(crate) use decimal_from_str;
+pub(crate) use integer_from_str;
 
 macro_rules! unescape_string_impl {
     ($fn_name:ident, $quote:literal) => {
@@ -75,7 +106,7 @@ macro_rules! unescape_string_impl {
 unescape_string_impl!(unescape_single_quoted_string, '\'');
 unescape_string_impl!(unescape_double_quoted_string, '"');
 
-pub trait Integer: FromStr<Err = ParseIntError> {}
+pub trait Integer: FromStr<Err = ParseIntError> + Num<FromStrRadixErr = ParseIntError> {}
 
 macro_rules! impl_trait {
     ($trait:ident, $typ:ident) => {
@@ -85,12 +116,12 @@ macro_rules! impl_trait {
 
 impl_trait!(Integer, u8);
 impl_trait!(Integer, usize);
+impl_trait!(Integer, u64);
 impl_trait!(Integer, u128);
-impl_trait!(Integer, NonZeroUsize);
 
 #[cfg(test)]
 mod tests {
-    use crate::parser::common::{unescape_double_quoted_string, unescape_single_quoted_string};
+    use crate::parser::literal::{unescape_double_quoted_string, unescape_single_quoted_string};
 
     #[test]
     fn unescape_string() {

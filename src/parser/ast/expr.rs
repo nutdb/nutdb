@@ -1,16 +1,18 @@
 use crate::parser::ast::{
-    BinaryOperator, Function, Identifier, Query, UnaryOperator, Value, Wildcard,
+    BinaryOperator, FnName, Identifier, Query, UnaryOperator, Value, Wildcard,
 };
 
-#[derive(Debug, Clone)]
+use derive_more::From;
+
+#[derive(Debug, Clone, From)]
 pub enum Expr {
     Wildcard(Wildcard),
     Identifier(Identifier),
+    QueryParameter(QueryParameter),
     Value(Value),
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
     FnCall(FnCall),
-    IndexAccess(IndexAccess),
     Subquery(Query),
 }
 
@@ -29,14 +31,13 @@ pub struct BinaryOp {
 
 #[derive(Debug, Clone)]
 pub struct FnCall {
-    pub callee: Function,
+    pub callee: FnName,
     pub arguments: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]
-pub struct IndexAccess {
-    pub operand: Box<Expr>,
-    pub index: Box<Expr>,
+pub struct QueryParameter {
+    pub index: usize,
 }
 
 #[derive(Debug, Clone)]

@@ -8,7 +8,9 @@ pub use expr::*;
 pub use item::*;
 pub use query::*;
 
-#[derive(Debug, Clone)]
+use derive_more::From;
+
+#[derive(Debug, Clone, From)]
 pub enum Statement {
     Select(SelectStmt),
     Insert(InsertStmt),
@@ -22,28 +24,6 @@ pub enum Statement {
     Optimize(OptimizeStmt),
     Set(SetStmt),
 }
-
-macro_rules! impl_from {
-    ($stmt:ident, $source:ident, $to:ident) => {
-        impl From<$source> for $stmt {
-            fn from(source: $source) -> Self {
-                $stmt::$to(source)
-            }
-        }
-    };
-}
-
-impl_from!(Statement, SelectStmt, Select);
-impl_from!(Statement, InsertStmt, Insert);
-impl_from!(Statement, ExplainStmt, Explain);
-impl_from!(Statement, AlterStmt, Alter);
-impl_from!(Statement, CreateTableStmt, CreateTable);
-impl_from!(Statement, CreateViewStmt, CreateView);
-impl_from!(Statement, DescribeStmt, Describe);
-impl_from!(Statement, DropStmt, Drop);
-impl_from!(Statement, TruncateStmt, Truncate);
-impl_from!(Statement, OptimizeStmt, Optimize);
-impl_from!(Statement, SetStmt, Set);
 
 #[derive(Debug, Clone)]
 pub struct SelectStmt {

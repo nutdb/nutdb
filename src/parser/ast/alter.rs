@@ -1,4 +1,5 @@
-use crate::parser::ast::{ColumnDefinition, ConstraintDefinition, IndexDefinition, ScalarValue};
+use crate::parser::ast::{ColumnDefinition, ConstraintDefinition, IndexDefinition};
+use crate::parser::Value;
 
 /// alter table entities or table properties
 #[derive(Debug, Clone)]
@@ -58,7 +59,7 @@ pub enum Alter {
     DropPartition {
         table_name: String,
         /// partition has no name but a ScalarValue
-        partition_key: ScalarValue,
+        partition_key: Value,
         if_exists: bool,
     },
 }

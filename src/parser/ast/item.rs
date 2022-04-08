@@ -1,23 +1,12 @@
 use crate::parser::ast::{Expr, FnCall};
 use bigdecimal::BigDecimal;
-use core::num::NonZeroUsize;
 
-#[derive(Debug, Clone)]
+use derive_more::From;
+
+#[derive(Debug, Clone, From)]
 pub enum DataType {
     Scalar(ScalarDataType),
     Compound(CompoundDataType),
-}
-
-impl From<ScalarDataType> for DataType {
-    fn from(d: ScalarDataType) -> Self {
-        DataType::Scalar(d)
-    }
-}
-
-impl From<CompoundDataType> for DataType {
-    fn from(d: CompoundDataType) -> Self {
-        DataType::Compound(d)
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -51,9 +40,9 @@ pub enum ScalarDataType {
     Chars {
         length: usize,
     },
-    /// optional max length
+    /// optional max length, 0 means unlimited
     String {
-        max_length: Option<NonZeroUsize>,
+        max_length: usize,
     },
     Uuid,
     Date,
@@ -85,40 +74,26 @@ pub struct EnumBind {
 /// Entity is an identifier or an compound identifier.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Identifier {
-    name: String,
-    qualifier: Option<String>,
+    pub name: String,
+    pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Wildcard {
-    qualifier: Option<String>,
+    pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    Scalar(ScalarValue),
-    Vector(VectorValue),
-    // Interval is special because users can only use its literal.
-    Interval(u64, IntervalUnit),
-    // Null is special
-    Null,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScalarValue {
-    /// bool indicates whether negative
-    Integer(u128, bool),
+    Integer(u128),
     /// BigDecimal is too big so box it.
     Float(Box<BigDecimal>),
     String(String),
     Boolean(bool),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VectorValue {
-    Tuple(Vec<ScalarValue>),
-    Array(Vec<ScalarValue>),
-    Map(Vec<(ScalarValue, ScalarValue)>),
+    // Interval is special because users can only use its literal.
+    Interval(u64, IntervalUnit),
+    // Null is special
+    Null,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +109,8 @@ pub enum IntervalUnit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOperator {
     BitwiseNot,
+    Not,
+    Neg,
     IsNull,
     IsNotNull,
 }
@@ -142,14 +119,13 @@ pub enum UnaryOperator {
 pub enum BinaryOperator {
     Plus,
     Minus,
-    Multiply,
-    Divide,
-    Modulo,
+    Multi,
+    Div,
+    Mod,
     Gt,
     Lt,
     GtEq,
     LtEq,
-    Assign,
     Eq,
     NotEq,
     And,
@@ -161,6 +137,7 @@ pub enum BinaryOperator {
     NotILike,
     In,
     NotIn,
+    IndexAccess,
     BitwiseOr,
     BitwiseAnd,
     BitwiseXor,
@@ -169,15 +146,24 @@ pub enum BinaryOperator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Function {
-    /// syntax sugar: IF <expr> THEN <expr> ELSE <expr> END
+pub enum FnName {
+    /// syntax sugar: `IF <expr> THEN <expr> ELSE <expr> END`
     If,
-    /// syntax sugar: CASE (WHEN <expr> THEN <expr>)... ELSE <expr> END
+    /// syntax sugar: `CASE (WHEN <expr> THEN <expr>)... ELSE <expr> END`
     MultiIf,
-    /// syntax sugar: CASE <expr> (WHEN <expr> THEN <expr>)... ELSE <expr> END
+    /// syntax sugar: `CASE <expr> (WHEN <expr> THEN <expr>)... ELSE <expr> END`
     CaseWhen,
-    /// other functions by name string
-    Others(String),
+    /// syntax sugar: `<expr> BETWEEN <expr> AND <expr>`
+    Between,
+    NotBetween,
+    /// syntax sugar: `(expr, ...)`
+    Tuple,
+    /// syntax sugar: `[expr, ...]`
+    Array,
+    /// syntax sugar: `{'key': 'value', ...}`
+    Map,
+    /// other functions by id
+    Others(Identifier),
 }
 
 #[derive(Debug, Clone)]
