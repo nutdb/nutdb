@@ -1,4 +1,6 @@
 use crate::parser::SyntaxError;
+use std::num::{NonZeroUsize, ParseIntError};
+use std::str::FromStr;
 
 macro_rules! unescape_string_impl {
     ($fn_name:ident, $quote:literal) => {
@@ -40,13 +42,17 @@ macro_rules! unescape_string_impl {
                                         let unicode = match u32::from_str_radix(&hex, 16) {
                                             Ok(u) => u,
                                             Err(_) => {
-                                                return Err(SyntaxError::InvalidEscapedUnicode { hex })
+                                                return Err(SyntaxError::InvalidEscapedUnicode {
+                                                    hex,
+                                                })
                                             }
                                         };
                                         match char::from_u32(unicode) {
                                             Some(ch) => ch,
                                             None => {
-                                                return Err(SyntaxError::InvalidEscapedUnicode { hex })
+                                                return Err(SyntaxError::InvalidEscapedUnicode {
+                                                    hex,
+                                                })
                                             }
                                         }
                                     } else {
@@ -68,6 +74,19 @@ macro_rules! unescape_string_impl {
 
 unescape_string_impl!(unescape_single_quoted_string, '\'');
 unescape_string_impl!(unescape_double_quoted_string, '"');
+
+pub trait Integer: FromStr<Err = ParseIntError> {}
+
+macro_rules! impl_trait {
+    ($trait:ident, $typ:ident) => {
+        impl $trait for $typ {}
+    };
+}
+
+impl_trait!(Integer, u8);
+impl_trait!(Integer, usize);
+impl_trait!(Integer, u128);
+impl_trait!(Integer, NonZeroUsize);
 
 #[cfg(test)]
 mod tests {

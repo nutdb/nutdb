@@ -1,7 +1,10 @@
-use crate::parser::ast::{BinaryOperator, Function, Identifier, Query, UnaryOperator, Value};
+use crate::parser::ast::{
+    BinaryOperator, Function, Identifier, Query, UnaryOperator, Value, Wildcard,
+};
 
 #[derive(Debug, Clone)]
 pub enum Expr {
+    Wildcard(Wildcard),
     Identifier(Identifier),
     Value(Value),
     UnaryOp(UnaryOp),
@@ -13,27 +16,27 @@ pub enum Expr {
 
 #[derive(Debug, Clone)]
 pub struct UnaryOp {
-    op: UnaryOperator,
-    operand: Box<Expr>,
+    pub op: UnaryOperator,
+    pub operand: Box<Expr>,
 }
 
 #[derive(Debug, Clone)]
 pub struct BinaryOp {
-    op: BinaryOperator,
-    left: Box<Expr>,
-    right: Box<Expr>,
+    pub op: BinaryOperator,
+    pub left: Box<Expr>,
+    pub right: Box<Expr>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FnCall {
-    callee: Function,
-    arguments: Vec<Expr>,
+    pub callee: Function,
+    pub arguments: Vec<Expr>,
 }
 
 #[derive(Debug, Clone)]
 pub struct IndexAccess {
-    operand: Box<Expr>,
-    index: Box<Expr>,
+    pub operand: Box<Expr>,
+    pub index: Box<Expr>,
 }
 
 #[derive(Debug, Clone)]

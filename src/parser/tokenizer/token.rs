@@ -14,10 +14,14 @@ pub enum TokenType {
     ConfigIdentifier,
     /// Query Parameters. e.g. `$0`.
     QueryParameter,
-    /// String literals. e.g. `'world'`.
-    SingleQuotedStringLiteral,
-    /// String literals. e.g. `"hello"
-    DoubleQuotedStringLiteral,
+    /// Raw String Literal
+    RawStringLiteral,
+    /// Escaped Single Quoted String literals. e.g. `'wor''ld'`.
+    #[display(fmt = "EscapedSingleQuotedStringLiteral")]
+    EscapedSQStringLiteral,
+    /// Escaped Double Quoted String literals. e.g. `"hel""lo"
+    #[display(fmt = "EscapedDoubleQuotedStringLiteral")]
+    EscapedDQStringLiteral,
     /// Numeric int literal. e.g. `1`.
     IntegerLiteral,
     /// Numeric float literal. e.g. `1.1`
@@ -83,7 +87,7 @@ pub enum TokenType {
     /// Whitespace.
     Whitespace,
     /// EOF.
-    Eof,
+    EOF,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +115,7 @@ impl Token {
     }
 
     #[inline(always)]
-    pub fn is_eof(&self) -> bool {
-        self.t == TokenType::Eof
+    pub fn is_terminator(&self) -> bool {
+        self.t == TokenType::EOF || self.t == TokenType::SemiColon
     }
 }

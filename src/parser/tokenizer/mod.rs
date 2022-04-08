@@ -71,7 +71,7 @@ impl Tokenizer<'_> {
         }
 
         match self.source.peek() {
-            None => emit_token!(self, Eof),
+            None => emit_token!(self, EOF),
             Some(ch) => match ch {
                 '(' => consume_peeked_and_emit_token!(self, LParen),
                 ')' => consume_peeked_and_emit_token!(self, RParen),
@@ -119,6 +119,8 @@ macro_rules! tokenize_string_literal_impl {
 
             self.source.consume_peeked();
 
+            let mut escaped = false;
+
             // should not contains quotes
             self.source.pin();
 
@@ -132,9 +134,14 @@ macro_rules! tokenize_string_literal_impl {
                                 if matches!(self.source.peek(), Some($quote)) {
                                     // support unescape `''` to `'` or `""` to `"`
                                     self.source.consume_peeked();
+                                    escaped = true;
                                 } else {
                                     // end of literal
-                                    break emit_token!($token on span);
+                                    break if escaped {
+                                        emit_token!($token on span)
+                                    } else {
+                                        emit_token!(RawStringLiteral on span)
+                                    };
                                 }
                             }
                             '\\' => {
@@ -147,6 +154,7 @@ macro_rules! tokenize_string_literal_impl {
                                         self.source.consume_peeked();
                                     }
                                 };
+                                escaped = true;
                             }
                             // `\r` and `\n` are supported in string but should be escaped.
                             '\r' => {
@@ -177,16 +185,8 @@ macro_rules! tokenize_string_literal_impl {
 
 // All functions assume that there is a peeked char in iter.
 impl Tokenizer<'_> {
-    tokenize_string_literal_impl!(
-        tokenize_single_quoted_string,
-        '\'',
-        SingleQuotedStringLiteral
-    );
-    tokenize_string_literal_impl!(
-        tokenize_double_quoted_string,
-        '"',
-        DoubleQuotedStringLiteral
-    );
+    tokenize_string_literal_impl!(tokenize_single_quoted_string, '\'', EscapedSQStringLiteral);
+    tokenize_string_literal_impl!(tokenize_double_quoted_string, '"', EscapedDQStringLiteral);
 
     fn tokenize_dot_or_numeric(&mut self) -> TokenizeResult {
         debug_assert!(matches!(self.source.peek(), Some('.' | '0'..='9')));
@@ -543,6 +543,7 @@ fn get_char_if_invalid_end_of_numeric(ch: Option<char>) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
+    use thiserror::private::DisplayAsDisplay;
     use TokenType::*;
 
     use crate::parser::tokenizer::{Token, TokenType, Tokenizer};
@@ -550,7 +551,7 @@ mod tests {
     fn collect_tokens(tn: &mut Tokenizer<'_>) -> Vec<Token> {
         let mut result = vec![];
         while let Ok(t) = tn.next_token() {
-            if t.is_eof() {
+            if t.is_terminator() {
                 break;
             }
             result.push(t);
@@ -607,12 +608,12 @@ mod tests {
     #[test]
     fn tokenize_strings() {
         let test_case = [
-            (r#""hello""#, "hello", DoubleQuotedStringLiteral), // if double-quoted
-            ("'hello'", "hello", SingleQuotedStringLiteral),    // if single-quoted
-            ("'he''llo'", "he''llo", SingleQuotedStringLiteral), // if escape '
-            (r#""he""llo""#, r#"he""llo"#, DoubleQuotedStringLiteral), // if escape "
-            ("'h\\t i\\r\\n'", "h\\t i\\r\\n", SingleQuotedStringLiteral), // if escape \t or \r\n
-            ("\"\\\n\"", "\\\n", DoubleQuotedStringLiteral),    // if escape \n
+            (r#""hello""#, "hello", RawStringLiteral), // if double-quoted
+            ("'hello'", "hello", RawStringLiteral),    // if single-quoted
+            ("'he''llo'", "he''llo", EscapedSQStringLiteral), // if escape '
+            (r#""he""llo""#, r#"he""llo"#, EscapedDQStringLiteral), // if escape "
+            ("'h\\t i\\r\\n'", "h\\t i\\r\\n", EscapedSQStringLiteral), // if escape \t or \r\n
+            ("\"\\\n\"", "\\\n", EscapedDQStringLiteral), // if escape \n
         ];
         for case in test_case {
             let mut t = Tokenizer::new(case.0);

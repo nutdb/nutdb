@@ -25,7 +25,7 @@ pub struct QueryBody {
     /// TODO: array_join
     // pub array_join: Option<()>,
     pub join: Option<JoinClause>,
-    pub where_: Option<WhereClause>,
+    pub r#where: Option<WhereClause>,
     pub group_by: Option<GroupByClause>,
     pub having: Option<HavingClause>,
     pub order_by: Option<OrderByClause>,

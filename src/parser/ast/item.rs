@@ -8,6 +8,18 @@ pub enum DataType {
     Compound(CompoundDataType),
 }
 
+impl From<ScalarDataType> for DataType {
+    fn from(d: ScalarDataType) -> Self {
+        DataType::Scalar(d)
+    }
+}
+
+impl From<CompoundDataType> for DataType {
+    fn from(d: CompoundDataType) -> Self {
+        DataType::Compound(d)
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ScalarDataType {
     Int8,
@@ -20,13 +32,9 @@ pub enum ScalarDataType {
     UInt32,
     UInt64,
     UInt128,
-    Serial8,
-    Serial16,
     Serial32,
     Serial64,
     Serial128,
-    USerial8,
-    USerial16,
     USerial32,
     USerial64,
     USerial128,
@@ -55,36 +63,35 @@ pub enum ScalarDataType {
 #[derive(Debug, Clone)]
 pub enum CompoundDataType {
     /// Array
-    Array(ScalarDataType),
+    Array(Box<DataType>),
     /// Enum
     Enum(Vec<EnumBind>),
     /// Tuple
-    Tuple(Vec<TupleBind>),
+    Tuple(Vec<DataType>),
     /// Map
-    Map(ScalarDataType, ScalarDataType),
+    Map(Box<DataType>, Box<DataType>),
     /// Special Dictionary
-    Dictionary(ScalarDataType),
+    Dictionary(Box<DataType>),
     /// Special Nullable
-    Nullable(ScalarDataType),
+    Nullable(Box<DataType>),
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumBind {
     pub id: usize,
-    pub literal: ScalarDataType,
-}
-
-#[derive(Debug, Clone)]
-pub struct TupleBind {
-    pub name: Option<String>,
-    pub typ: ScalarDataType,
+    pub literal: String,
 }
 
 /// Entity is an identifier or an compound identifier.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Identifier {
     name: String,
-    parent: Option<String>,
+    qualifier: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Wildcard {
+    qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
