@@ -13,6 +13,7 @@ mod ast;
 mod error;
 mod keyword;
 mod literal;
+mod rewrite;
 mod tokenizer;
 
 type ParseResult = Result<Statement, ParseError>;
@@ -24,7 +25,7 @@ pub struct Parser<'a> {
 
 impl Parser<'_> {
     pub fn parse(sql: &str) -> ParseResult {
-        todo!()
+        Parser::new(sql).parse_stmt()
     }
 }
 
@@ -50,39 +51,17 @@ macro_rules! emit_error {
     }
 }
 
-/// `emit_stmt!(Stmt {...})`
-macro_rules! emit_stmt {
-    ($stmt:ident $($init:tt)?) => {
-        Ok(Some($stmt $($init)?.into()))
-    };
-    ($stmt:expr) => {
-        Ok(Some($stmt.into()))
-    }
-}
-
-/// ```plain
-/// returns_first!(
-///     xxx(),
-///     yyy()
-/// )
-/// ```
-macro_rules! try_parse_chain {
-    ($($fn_call:expr),+) => {
-        loop {
-            $(
-            let res = $fn_call;
-            if res.is_some() {
-                break res
-            })+
-            break None
-        }
-    }
-}
-
 /// - `test_keyword!(token_str, keyword)`
 macro_rules! test_keyword {
     ($token_str:expr, $keyword:expr) => {
         $token_str.eq_ignore_ascii_case($keyword)
+    };
+}
+
+/// - `test_keywords!(token_str, [keyword])`
+macro_rules! test_keywords {
+    ($token_str:expr, [$($kw:expr),+]) => {
+        [$($kw),+].iter().any(|&s| test_keyword!(s, $token_str))
     };
 }
 
@@ -102,6 +81,33 @@ macro_rules! next_expect {
     }};
     ($self:ident, [$($expected:ident),+]) => {{
         let token = $self.next()?;
+        if ($(token.t != TokenType::$expected)&&+) {
+            return emit_error!(NotExpectedTokenTypes {
+                expected: vec![$(TokenType::$expected),+],
+                actual: token.t,
+                pos: $self.token_pos(&token)
+            });
+        }
+        token
+    }};
+}
+
+/// - `peek_expect!(self, expected_type)`
+/// - `peek_expect!(self, [expected_type,...])`
+macro_rules! peek_expect {
+    ($self:ident, $expected:ident) => {{
+        let token = $self.peek()?;
+        if (token.t != TokenType::$expected) {
+            return emit_error!(NotExpectedTokenTypes {
+                expected: vec![TokenType::$expected],
+                actual: token.t,
+                pos: $self.token_pos(&token)
+            });
+        }
+        token
+    }};
+    ($self:ident, [$($expected:ident),+]) => {{
+        let token = $self.peek()?;
         if ($(token.t != TokenType::$expected)&&+) {
             return emit_error!(NotExpectedTokenTypes {
                 expected: vec![$(TokenType::$expected),+],
@@ -136,8 +142,31 @@ macro_rules! next_if {
     }};
 }
 
+macro_rules! comma_separated {
+    ($self:ident, $t:expr) => {
+        loop {
+            $t;
+            if !next_if!($self, Comma) {
+                break;
+            }
+        }
+    };
+}
+
 impl Parser<'_> {
     fn parse_stmt(&mut self) -> ParseResult {
+        macro_rules! try_parse_chain {
+            ($($fn_call:expr),+) => {
+                loop {
+                    $(
+                    let res = $fn_call;
+                    if res.is_some() { break res }
+                    )+
+                    break None
+                }
+            }
+        }
+
         let token = self.next()?;
         if token.is_terminator() {
             return emit_error!(EmptyQuery);
@@ -177,50 +206,324 @@ impl Parser<'_> {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum QueryStartState {
+    With,
+    Select,
+}
+
 impl Parser<'_> {
     fn try_parse_select_stmt(
         &mut self,
         leading_keyword: &str,
     ) -> Result<Option<Statement>, ParseError> {
-        if let Some(query) = self.try_parse_subquery(leading_keyword)? {
-            emit_stmt!(SelectStmt { query })
+        let start_state = if test_keyword!(leading_keyword, WITH) {
+            QueryStartState::With
+        } else if test_keyword!(leading_keyword, SELECT) {
+            QueryStartState::Select
+        } else {
+            return Ok(None);
+        };
+        let query = self.must_parse_query_tdop(start_state, SetOpPower::Terminator)?;
+        Ok(Some(SelectStmt::new(query).into()))
+    }
+
+    fn must_parse_subquery(&mut self) -> Result<Query, ParseError> {
+        self.must_parse_subquery_tdop(SetOpPower::Terminator)
+    }
+
+    fn must_parse_subquery_tdop(&mut self, power: SetOpPower) -> Result<Query, ParseError> {
+        let has_paren = next_if!(self, LParen);
+
+        let start_state = match self.must_parse_one_of_keywords(&[WITH, SELECT])? {
+            0 => QueryStartState::With,
+            1 => QueryStartState::Select,
+            _ => never!(),
+        };
+
+        let query = self.must_parse_query_tdop(
+            start_state,
+            if has_paren {
+                SetOpPower::Terminator
+            } else {
+                power
+            },
+        )?;
+
+        if has_paren {
+            next_expect!(self, RParen);
+        }
+
+        Ok(query)
+    }
+
+    fn must_parse_query_tdop(
+        &mut self,
+        start_state: QueryStartState,
+        power: SetOpPower,
+    ) -> Result<Query, ParseError> {
+        let mut query = Query::One(Box::new(self.must_parse_query_body(start_state)?));
+        loop {
+            let token = self.peek()?;
+            if !token.maybe_keyword() {
+                break;
+            }
+
+            let token_str = self.token_str(&token);
+
+            let (next_power, merge_type) = if test_keyword!(token_str, INTERSECT) {
+                self.consume_peeked();
+                (SetOpPower::Intersect, MergeType::Intersect)
+            } else if test_keyword!(token_str, UNION) {
+                self.consume_peeked();
+                (
+                    SetOpPower::Union,
+                    match self.must_parse_one_of_keywords(&[ALL, DISTINCT])? {
+                        0 => MergeType::UnionAll,
+                        1 => MergeType::UnionDistinct,
+                        _ => never!(),
+                    },
+                )
+            } else if test_keyword!(token_str, EXCEPT) {
+                self.consume_peeked();
+                (SetOpPower::Except, MergeType::Except)
+            } else {
+                break;
+            };
+            if next_power <= power {
+                break;
+            }
+
+            query = Query::Merged {
+                typ: merge_type,
+                left: Box::new(query),
+                right: Box::new(self.must_parse_subquery_tdop(next_power)?),
+            }
+        }
+        Ok(query)
+    }
+
+    /// assume that the first token of the query is consumed
+    fn must_parse_query_body(
+        &mut self,
+        start_state: QueryStartState,
+    ) -> Result<QueryBody, ParseError> {
+        let with_clause = if start_state == QueryStartState::With {
+            let w = self.must_parse_query_clause_with()?;
+            // consume next `select`
+            self.must_parse_keyword(SELECT)?;
+            Some(w)
+        } else {
+            None
+        };
+        // no need to use loop since query clauses have strict order
+
+        let distinct_clause = if self.try_parse_keyword(DISTINCT)? {
+            Some(self.must_parse_query_clause_distinct()?)
+        } else {
+            None
+        };
+
+        let columns = self.must_parse_expr_list()?;
+
+        // after <columns>, every clause starts with a keyword
+        let from_clause = self.try_parse_query_clause_from()?;
+        let join_clause = self.try_parse_query_clause_join()?;
+        let where_clause = self.try_parse_query_clause_where()?;
+        let group_by_clause = self.try_parse_query_clause_group_by()?;
+        let having_clause = self.try_parse_query_clause_having()?;
+        let order_by_clause = self.try_parse_query_clause_order_by()?;
+        let limit_clause = self.try_parse_query_clause_limit()?;
+
+        Ok(QueryBody::new(
+            with_clause,
+            distinct_clause,
+            columns,
+            from_clause,
+            join_clause,
+            where_clause,
+            group_by_clause,
+            having_clause,
+            order_by_clause,
+            limit_clause,
+        ))
+    }
+
+    fn must_parse_query_clause_with(&mut self) -> Result<WithClause, ParseError> {
+        let mut list = vec![];
+
+        comma_separated!(self, {
+            let expr = self.must_parse_expr()?;
+            if !matches!(expr, Expr::Alias(_)) {
+                // non-alias exprs are not allowed
+                // use `must_parse_keyword` to emit error
+                self.must_parse_keyword(AS)?;
+                never!()
+            }
+            list.push(expr);
+        });
+
+        Ok(WithClause::new(list))
+    }
+
+    fn must_parse_query_clause_distinct(&mut self) -> Result<DistinctClause, ParseError> {
+        let columns = if self.try_parse_keyword(ON)? {
+            next_expect!(self, LParen);
+            let exprs = self.must_parse_expr_list()?;
+            next_expect!(self, RParen);
+            Some(exprs)
+        } else {
+            None
+        };
+
+        Ok(DistinctClause::new(columns))
+    }
+
+    fn try_parse_query_clause_from(&mut self) -> Result<Option<FromClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        if test_keyword!(token_str, FROM) {
+            self.consume_peeked();
+            Ok(Some(FromClause::new(self.must_parse_expr()?)))
         } else {
             Ok(None)
         }
     }
 
-    fn must_parse_subquery(&mut self) -> Result<Query, ParseError> {
-        let leading_with = match self.must_parse_one_of_keywords(&[WITH, SELECT])? {
-            0 => true,
-            1 => false,
-            _ => never!(),
-        };
-
-        let query = self.must_parse_query(leading_with)?;
-
-        Ok(query)
-    }
-
-    fn try_parse_subquery(&mut self, leading_keyword: &str) -> Result<Option<Query>, ParseError> {
-        let leading_with = if test_keyword!(leading_keyword, WITH) {
-            true
-        } else if test_keyword!(leading_keyword, SELECT) {
-            false
+    fn try_parse_query_clause_join(&mut self) -> Result<Option<JoinClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        let join_type = if test_keyword!(token_str, INNER) {
+            self.consume_peeked();
+            JoinType::Inner
+        } else if test_keyword!(token_str, FULL) {
+            self.consume_peeked();
+            self.try_parse_keyword(OUTER)?;
+            JoinType::FullOuter
+        } else if test_keyword!(token_str, LEFT) {
+            self.consume_peeked();
+            match self.must_parse_one_of_keywords(&[OUTER, SEMI, ANTI])? {
+                0 => JoinType::LeftOuter,
+                1 => JoinType::LeftSemi,
+                2 => JoinType::LeftAnti,
+                _ => never!(),
+            }
+        } else if test_keyword!(token_str, RIGHT) {
+            self.consume_peeked();
+            match self.must_parse_one_of_keywords(&[OUTER, SEMI, ANTI])? {
+                0 => JoinType::RightOuter,
+                1 => JoinType::RightSemi,
+                2 => JoinType::RightAnti,
+                _ => never!(),
+            }
+        } else if test_keyword!(token_str, JOIN) {
+            JoinType::Inner
         } else {
             return Ok(None);
         };
 
-        let query = self.must_parse_query(leading_with)?;
+        self.must_parse_keyword(JOIN)?;
 
-        Ok(Some(query))
+        let source = self.must_parse_expr()?;
+
+        let join_condition = match self.must_parse_one_of_keywords(&[ON, USING])? {
+            0 => JoinCondition::On(Box::new(self.must_parse_expr()?)),
+            1 => {
+                next_expect!(self, LParen);
+                let mut columns = vec![];
+                comma_separated!(self, columns.push(self.must_parse_identifier()?));
+                next_expect!(self, RParen);
+                JoinCondition::Using(columns)
+            }
+            _ => never!(),
+        };
+        Ok(Some(JoinClause::new(join_type, source, join_condition)))
     }
 
-    fn must_parse_query(&mut self, leading_with: bool) -> Result<Query, ParseError> {
-        todo!()
+    fn try_parse_query_clause_where(&mut self) -> Result<Option<WhereClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        if test_keyword!(token_str, WHERE) {
+            self.consume_peeked();
+            Ok(Some(WhereClause::new(self.must_parse_expr()?)))
+        } else {
+            Ok(None)
+        }
     }
 
-    fn parse_query_clause_with(&mut self) -> Result<Option<Statement>, ParseError> {
-        todo!()
+    fn try_parse_query_clause_group_by(&mut self) -> Result<Option<GroupByClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        if test_keyword!(token_str, GROUP) {
+            self.consume_peeked();
+            self.must_parse_keyword(BY)?;
+            Ok(Some(GroupByClause::new(self.must_parse_expr_list()?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn try_parse_query_clause_having(&mut self) -> Result<Option<HavingClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        if test_keyword!(token_str, HAVING) {
+            self.consume_peeked();
+            Ok(Some(HavingClause::new(self.must_parse_expr()?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn try_parse_query_clause_order_by(&mut self) -> Result<Option<OrderByClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        if test_keyword!(token_str, ORDER) {
+            self.consume_peeked();
+            self.must_parse_keyword(BY)?;
+            Ok(Some(OrderByClause::new(self.must_parse_expr_list()?)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn try_parse_query_clause_limit(&mut self) -> Result<Option<LimitClause>, ParseError> {
+        let token = peek_expect!(self, KeywordOrIdentifier);
+        let token_str = self.token_str(&token);
+        if !test_keyword!(token_str, LIMIT) {
+            return Ok(None);
+        }
+        self.consume_peeked();
+        let first = self.must_parse_integer_literal()?;
+        let token = self.peek()?;
+        let (size, offset) = match token.t {
+            TokenType::Comma => {
+                self.consume_peeked();
+                // limit o, n
+                let second = self.must_parse_integer_literal()?;
+                (second, first)
+            }
+            TokenType::KeywordOrIdentifier => {
+                let s = self.token_str(&token);
+                if test_keyword!(s, OFFSET) {
+                    // limit n offset o
+                    self.consume_peeked();
+                    let second = self.must_parse_integer_literal()?;
+                    (first, second)
+                } else {
+                    (first, 0)
+                }
+            }
+            // limit n
+            _ => (first, 0),
+        };
+        let with_ties = if self.try_parse_keyword(WITH)? {
+            self.must_parse_keyword(TIES)?;
+            true
+        } else {
+            false
+        };
+
+        Ok(Some(LimitClause::new(size, offset, with_ties)))
     }
 }
 
@@ -229,7 +532,80 @@ impl Parser<'_> {
         &mut self,
         leading_keyword: &str,
     ) -> Result<Option<Statement>, ParseError> {
-        todo!()
+        if !test_keyword!(leading_keyword, INSERT) {
+            return Ok(None);
+        }
+        self.must_parse_keyword(INTO)?;
+        let table_name = self.must_parse_identifier_string()?;
+        let columns = if next_if!(self, LParen) {
+            // (<columns>)
+            let mut list = vec![];
+            comma_separated!(
+                self,
+                list.push(self.must_parse_identifier_string()?.to_owned())
+            );
+            next_expect!(self, RParen);
+            Some(list)
+        } else {
+            None
+        };
+
+        let report_token = self.peek()?;
+        let source = match self.must_parse_one_of_keywords(&[VALUES, FROM, SELECT, WITH])? {
+            // values
+            0 => self.must_parse_insert_rows()?,
+            // from function
+            1 => InsertSource::FnCall(match self.must_parse_expr()? {
+                Expr::FnCall(fn_call) => fn_call,
+                _ => {
+                    return emit_error!(ParseFail {
+                        pos: self.token_pos(&report_token)
+                    });
+                }
+            }),
+            2 | 3 => InsertSource::Subquery(self.must_parse_subquery()?),
+            _ => never!(),
+        };
+
+        Ok(Some(
+            InsertStmt::new(table_name.to_owned(), columns, source).into(),
+        ))
+    }
+
+    fn must_parse_insert_rows(&mut self) -> Result<InsertSource, ParseError> {
+        // first tuple
+        next_expect!(self, LParen);
+        let mut data = vec![];
+        let mut column_size = 0;
+        comma_separated!(self, {
+            data.push(self.must_parse_expr()?);
+            column_size += 1;
+        });
+        next_expect!(self, RParen);
+        // if have more tuples
+        if next_if!(self, Comma) {
+            // for (data,...), ...
+            comma_separated!(self, {
+                next_expect!(self, LParen);
+                let mut this_size = 0;
+                // for data,...
+                comma_separated!(self, {
+                    data.push(self.must_parse_expr()?);
+                    this_size += 1;
+                });
+                if this_size != column_size {
+                    let report_token = self.peek()?;
+                    return emit_error!(Conflicts {
+                        this: format!("value length {}", this_size),
+                        that: format!("previous value length {}", column_size),
+                        pos: self.token_pos(&report_token)
+                    });
+                }
+                next_expect!(self, RParen);
+            });
+        }
+
+        Ok(InsertSource::Rows { column_size, data })
     }
 }
 
@@ -244,7 +620,7 @@ impl Parser<'_> {
 
         let query = self.must_parse_subquery()?;
 
-        emit_stmt!(ExplainStmt { query })
+        Ok(Some(ExplainStmt::new(query).into()))
     }
 }
 
@@ -281,7 +657,8 @@ impl Parser<'_> {
         let mut columns = vec![];
         let mut indexes = vec![];
         let mut constraints = vec![];
-        loop {
+        comma_separated!(
+            self,
             if self.try_parse_keyword(INDEX)? {
                 indexes.push(self.must_parse_index_def()?);
             } else if self.try_parse_keyword(CONSTRAINT)? {
@@ -289,24 +666,22 @@ impl Parser<'_> {
             } else {
                 columns.push(self.must_parse_column_def()?)
             }
-            if !next_if!(self, Comma) {
-                break;
-            }
-        }
+        );
+
         // parse )
         next_expect!(self, RParen);
 
-        let mut stmt = CreateTableStmt {
+        let mut stmt = CreateTableStmt::new(
+            table_name.to_owned(),
             if_not_exists,
-            name: table_name.to_owned(),
             columns,
             constraints,
             indexes,
-            primary_key: None,
-            order_by: None,
-            partition_by: None,
-            comment: None,
-        };
+            None,
+            None,
+            None,
+            None,
+        );
 
         // parse optional attrs
         loop {
@@ -317,41 +692,31 @@ impl Parser<'_> {
             match self.must_parse_one_of_keywords(&[PRIMARY, ORDER, PARTITION, COMMENT])? {
                 0 => {
                     if stmt.primary_key.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "primary key".to_owned(),
                             that: "primary key".to_owned(),
                             pos: self.token_pos(&token)
                         });
                     }
                     self.must_parse_keyword(KEY)?;
-                    // paren is optional
-                    let has_paren = next_if!(self, LParen);
                     let keys = self.must_parse_expr_list()?;
-                    if has_paren {
-                        next_expect!(self, RParen);
-                    }
                     stmt.primary_key = Some(keys);
                 }
                 1 => {
                     if stmt.order_by.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "order by".to_owned(),
                             that: "order by".to_owned(),
                             pos: self.token_pos(&token)
                         });
                     }
                     self.must_parse_keyword(BY)?;
-                    // paren is optional
-                    let has_paren = next_if!(self, LParen);
                     let keys = self.must_parse_expr_list()?;
-                    if has_paren {
-                        next_expect!(self, RParen);
-                    }
                     stmt.order_by = Some(keys);
                 }
                 2 => {
                     if stmt.partition_by.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "partition by".to_owned(),
                             that: "partition by".to_owned(),
                             pos: self.token_pos(&token)
@@ -363,7 +728,7 @@ impl Parser<'_> {
                 }
                 3 => {
                     if stmt.comment.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: COMMENT.to_owned(),
                             that: COMMENT.to_owned(),
                             pos: self.token_pos(&token)
@@ -376,7 +741,7 @@ impl Parser<'_> {
             }
         }
 
-        emit_stmt!(stmt)
+        Ok(Some(stmt.into()))
     }
 
     fn must_parse_create_view_stmt(&mut self) -> Result<Option<Statement>, ParseError> {
@@ -416,7 +781,7 @@ impl Parser<'_> {
                 }
                 1 => {
                     if strategy.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "update by".to_owned(),
                             that: "update by".to_owned(),
                             pos: self.token_pos(&token)
@@ -427,24 +792,19 @@ impl Parser<'_> {
                 }
                 2 => {
                     if primary_key.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "primary key".to_owned(),
                             that: "primary key".to_owned(),
                             pos: self.token_pos(&token)
                         });
                     }
                     self.must_parse_keyword(KEY)?;
-                    // paren is optional
-                    let has_paren = next_if!(self, LParen);
                     let key = self.must_parse_expr_list()?;
-                    if has_paren {
-                        next_expect!(self, RParen);
-                    }
                     primary_key = Some(key);
                 }
                 3 => {
                     if order_by.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "order by".to_owned(),
                             that: "order by".to_owned(),
                             pos: self.token_pos(&token)
@@ -452,16 +812,12 @@ impl Parser<'_> {
                     }
                     self.must_parse_keyword(BY)?;
                     // paren is optional
-                    let has_paren = next_if!(self, LParen);
                     let key = self.must_parse_expr_list()?;
-                    if has_paren {
-                        next_expect!(self, RParen);
-                    }
                     order_by = Some(key);
                 }
                 4 => {
                     if partition_by.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: "partition by".to_owned(),
                             that: "partition by".to_owned(),
                             pos: self.token_pos(&token)
@@ -473,7 +829,7 @@ impl Parser<'_> {
                 }
                 5 => {
                     if comment.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: COMMENT.to_owned(),
                             that: COMMENT.to_owned(),
                             pos: self.token_pos(&token)
@@ -488,27 +844,27 @@ impl Parser<'_> {
         // parse subquery
         let query = self.must_parse_subquery()?;
 
-        emit_stmt!(CreateViewStmt {
-            if_not_exists,
-            name: view_name.to_owned(),
-            // strategy must be Some
-            strategy: unsafe { strategy.unwrap_unchecked() },
-            primary_key,
-            order_by,
-            partition_by,
-            query,
-            comment
-        })
+        Ok(Some(
+            CreateViewStmt::new(
+                view_name.to_owned(),
+                if_not_exists,
+                // strategy must be Some
+                unsafe { strategy.unwrap_unchecked() },
+                primary_key,
+                order_by,
+                partition_by,
+                query,
+                comment,
+            )
+            .into(),
+        ))
     }
 
     fn must_parse_constraint_def(&mut self) -> Result<ConstraintDefinition, ParseError> {
         let name = self.must_parse_identifier_string()?;
         self.must_parse_keyword(CHECK)?;
         let expr = self.must_parse_expr()?;
-        Ok(ConstraintDefinition {
-            name: name.to_owned(),
-            check: expr,
-        })
+        Ok(ConstraintDefinition::new(name.to_owned(), expr))
     }
 
     fn must_parse_index_def(&mut self) -> Result<IndexDefinition, ParseError> {
@@ -523,21 +879,13 @@ impl Parser<'_> {
             }
         };
 
-        Ok(IndexDefinition {
-            name: name.to_owned(),
-            indexer: fn_call,
-        })
+        Ok(IndexDefinition::new(name.to_owned(), fn_call))
     }
 
     fn must_parse_column_def(&mut self) -> Result<ColumnDefinition, ParseError> {
         let name = self.must_parse_identifier_string()?;
         let datatype = self.must_parse_datatype()?;
-        let mut def = ColumnDefinition {
-            name: name.to_owned(),
-            typ: datatype,
-            default: None,
-            comment: None,
-        };
+        let mut def = ColumnDefinition::new(name.to_owned(), datatype, None, None);
 
         loop {
             let token = self.peek()?;
@@ -547,7 +895,7 @@ impl Parser<'_> {
             match self.must_parse_one_of_keywords(&[DEFAULT, COMMENT])? {
                 0 => {
                     if def.default.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: DEFAULT.to_owned(),
                             that: DEFAULT.to_owned(),
                             pos: self.token_pos(&token)
@@ -557,7 +905,7 @@ impl Parser<'_> {
                 }
                 1 => {
                     if def.comment.is_some() {
-                        return emit_error!(OptionConflicts {
+                        return emit_error!(Conflicts {
                             this: COMMENT.to_owned(),
                             that: COMMENT.to_owned(),
                             pos: self.token_pos(&token)
@@ -602,7 +950,7 @@ impl Parser<'_> {
             _ => never!(),
         };
 
-        emit_stmt!(stmt)
+        Ok(Some(stmt.into()))
     }
 }
 
@@ -633,11 +981,9 @@ impl Parser<'_> {
         // parse <name>
         let name = self.must_parse_identifier_string()?;
 
-        emit_stmt!(DropStmt {
-            typ: entity_type,
-            if_exists,
-            name: name.to_owned(),
-        })
+        Ok(Some(
+            DropStmt::new(entity_type, if_exists, name.to_owned()).into(),
+        ))
     }
 }
 
@@ -668,11 +1014,9 @@ impl Parser<'_> {
         // parse <name>
         let name = self.must_parse_identifier_string()?;
 
-        emit_stmt!(TruncateStmt {
-            typ: entity_type,
-            if_exists,
-            name: name.to_owned(),
-        })
+        Ok(Some(
+            TruncateStmt::new(entity_type, if_exists, name.to_owned()).into(),
+        ))
     }
 }
 
@@ -693,10 +1037,7 @@ impl Parser<'_> {
         let table_name = self.must_parse_identifier_string()?;
 
         if self.peek()?.is_terminator() {
-            return emit_stmt!(OptimizeStmt {
-                table_name: table_name.to_owned(),
-                partition_key: None,
-            });
+            return Ok(Some(OptimizeStmt::new(table_name.to_owned(), None).into()));
         }
 
         // parse optional [on partition <partition>]
@@ -705,10 +1046,9 @@ impl Parser<'_> {
         // parse <part>
         let part = self.must_parse_expr()?;
 
-        emit_stmt!(OptimizeStmt {
-            table_name: table_name.to_owned(),
-            partition_key: Some(part),
-        })
+        Ok(Some(
+            OptimizeStmt::new(table_name.to_owned(), Some(part)).into(),
+        ))
     }
 }
 
@@ -732,22 +1072,14 @@ impl Parser<'_> {
         // parse `<value>`
         let expr = self.must_parse_expr()?;
 
-        emit_stmt!(SetStmt {
-            config_name: config_name.to_owned(),
-            value: expr,
-        })
+        Ok(Some(SetStmt::new(config_name.to_owned(), expr).into()))
     }
 }
 
 impl Parser<'_> {
     fn must_parse_expr_list(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut res = vec![];
-        loop {
-            res.push(self.must_parse_expr()?);
-            if !next_if!(self, Comma) {
-                break;
-            }
-        }
+        comma_separated!(self, res.push(self.must_parse_expr()?));
         Ok(res)
     }
 
@@ -777,25 +1109,16 @@ impl Parser<'_> {
             LParen => {
                 // tuple or subquery or just a wrapper
                 let token = self.peek()?;
-                let e = if let Some(query) = {
-                    if token.maybe_keyword() {
-                        None
-                    } else {
-                        self.try_parse_subquery(self.token_str(&token))?
-                    }
-                } {
-                    query.into()
+                let s = self.token_str(&token);
+                let e = if token.maybe_keyword() && test_keywords!(s, [SELECT, WITH]) {
+                    self.must_parse_subquery()?.into()
                 } else {
                     let exprs = self.must_parse_expr_list()?;
                     match exprs.len() {
                         // parse_expr will throw errors if no expr found
                         0 => never!(),
                         1 => unsafe { exprs.into_iter().next().unwrap_unchecked() },
-                        _ => FnCall {
-                            callee: FnName::Tuple,
-                            arguments: exprs,
-                        }
-                        .into(),
+                        _ => Collection::new(CollectionType::Tuple, exprs).into(),
                     }
                 };
                 next_expect!(self, RParen);
@@ -803,85 +1126,58 @@ impl Parser<'_> {
             }
             LBracket => {
                 // array literal
-                let e = FnCall {
-                    callee: FnName::Array,
-                    arguments: self.must_parse_expr_list()?,
-                }
-                .into();
+                let e = Collection::new(CollectionType::Array, self.must_parse_expr_list()?).into();
                 next_expect!(self, RBracket);
                 e
             }
             LBrace => {
                 // map literal
-                let e = FnCall {
-                    callee: FnName::Map,
-                    arguments: self.must_parse_map()?,
-                }
-                .into();
+                let e = Collection::new(CollectionType::Map, self.must_parse_map()?).into();
                 next_expect!(self, RBrace);
                 e
             }
             Minus => {
                 let e = self.must_parse_expr_prefix()?;
-                UnaryOp {
-                    op: UnaryOperator::Neg,
-                    operand: Box::new(e),
-                }
-                .into()
+                UnaryOp::new(UnaryOperator::Neg, Box::new(e)).into()
             }
             Plus => self.must_parse_expr_prefix()?,
             BitNot => {
                 let e = self.must_parse_expr_prefix()?;
-                UnaryOp {
-                    op: UnaryOperator::BitwiseNot,
-                    operand: Box::new(e),
-                }
-                .into()
+                UnaryOp::new(UnaryOperator::BitwiseNot, Box::new(e)).into()
             }
-            RawStringLiteral => Value::String(s.to_owned()).into(),
-            EscapedSQStringLiteral => Value::String(unescape_single_quoted_string(s)?).into(),
-            EscapedDQStringLiteral => Value::String(unescape_double_quoted_string(s)?).into(),
-            FloatLiteral => Value::Float(Box::new(literal::decimal_from_str!(s))).into(),
-            HexLiteral => Value::Integer(literal::integer_from_str!(hex, u128, s)).into(),
-            IntegerLiteral => Value::Integer(literal::integer_from_str!(u128, s)).into(),
+            RawStringLiteral => Literal::String(s.to_owned()).into(),
+            EscapedSQStringLiteral => Literal::String(unescape_single_quoted_string(s)?).into(),
+            EscapedDQStringLiteral => Literal::String(unescape_double_quoted_string(s)?).into(),
+            FloatLiteral => Literal::Float(Box::new(literal::decimal_from_str!(s))).into(),
+            HexLiteral => Literal::Integer(literal::integer_from_str!(hex, u128, s)).into(),
+            IntegerLiteral => Literal::Integer(literal::integer_from_str!(u128, s)).into(),
             KeywordOrIdentifier => {
                 // maybe booleans, null, identifiers,  fn name.
                 if test_keyword!(s, TRUE) {
-                    Value::Boolean(true).into()
+                    Literal::Boolean(true).into()
                 } else if test_keyword!(s, FALSE) {
-                    Value::Boolean(false).into()
+                    Literal::Boolean(false).into()
                 } else if test_keyword!(s, NULL) {
-                    Value::Null.into()
-                } else if test_keyword!(s, INTERVAL) {
-                    self.must_parse_interval()?.into()
+                    Literal::Null.into()
                 } else if test_keyword!(s, NOT) {
                     let e = self.must_parse_expr_prefix()?;
-                    UnaryOp {
-                        op: UnaryOperator::Not,
-                        operand: Box::new(e),
-                    }
-                    .into()
+                    UnaryOp::new(UnaryOperator::Not, Box::new(e)).into()
+                } else if test_keyword!(s, INTERVAL) {
+                    self.must_parse_interval()?.into()
+                } else if test_keyword!(s, IF) {
+                    self.must_parse_if_body()?.into()
+                } else if test_keyword!(s, CASE) {
+                    self.must_parse_case_when_body()?.into()
                 } else {
-                    let id = self.must_parse_identifier()?;
-                    if next_if!(self, LParen) {
-                        // is fn call
-                        let args = self.must_parse_expr_list()?;
-                        next_expect!(self, RParen);
-                        FnCall {
-                            callee: FnName::Others(id),
-                            arguments: args,
-                        }
-                        .into()
-                    } else {
-                        id.into()
+                    let id = self.must_parse_identifier_based_prefix(s)?;
+                    match self.try_parse_fn_call_args()? {
+                        Some(args) => FnCall::new(FnName::Others(id), args).into(),
+                        None => id.into(),
                     }
                 }
             }
-            DelimitedIdentifier => self.must_parse_identifier()?.into(),
-            QueryParameter => ast::QueryParameter {
-                index: self.must_parse_integer_literal()?,
-            }
-            .into(),
+            DelimitedIdentifier => self.must_parse_identifier_based_prefix(s)?.into(),
+            QueryParameter => ast::QueryParameter::new(self.must_parse_integer_literal()?).into(),
             _ => {
                 return emit_error!(NotExpectedTokenTypes {
                     expected: vec![
@@ -926,22 +1222,21 @@ impl Parser<'_> {
 
         macro_rules! emit_binary_op {
             ($self:ident, $op:ident, $left:expr, $power:expr) => {
-                BinaryOp {
-                    op: BinaryOperator::$op,
-                    left: Box::new($left),
-                    right: Box::new($self.must_parse_expr_tdop($power)?),
-                }
+                BinaryOp::new(
+                    BinaryOperator::$op,
+                    Box::new($left),
+                    Box::new($self.must_parse_expr_tdop($power)?),
+                )
                 .into()
+            };
+            ($op:ident, $left:expr, $right:expr) => {
+                BinaryOp::new(BinaryOperator::$op, Box::new($left), Box::new($right)).into()
             };
         }
 
         macro_rules! emit_unary_op {
             ($op:ident, $left:expr) => {
-                UnaryOp {
-                    op: UnaryOperator::$op,
-                    operand: Box::new($left),
-                }
-                .into()
+                UnaryOp::new(UnaryOperator::$op, Box::new($left)).into()
             };
         }
 
@@ -966,15 +1261,10 @@ impl Parser<'_> {
             LBracket => {
                 let e = self.must_parse_expr()?;
                 next_expect!(self, RBracket);
-                BinaryOp {
-                    op: BinaryOperator::IndexAccess,
-                    left: Box::new(left),
-                    right: Box::new(e),
-                }
-                .into()
+                emit_binary_op!(IndexAccess, left, e)
             }
             KeywordOrIdentifier => {
-                match self.must_parse_one_of_keywords(&[NOT, IS, IN, LIKE, ILIKE, BETWEEN])? {
+                match self.must_parse_one_of_keywords(&[NOT, IS, IN, LIKE, ILIKE, BETWEEN, AS])? {
                     0 => match self.must_parse_one_of_keywords(&[IN, LIKE, ILIKE, BETWEEN])? {
                         0 => emit_binary_op!(self, NotIn, left, this_power),
                         1 => emit_binary_op!(self, NotLike, left, this_power),
@@ -983,11 +1273,7 @@ impl Parser<'_> {
                             let min = self.must_parse_expr_tdop(TokenPower::Between)?;
                             self.must_parse_keyword(AND)?;
                             let max = self.must_parse_expr_tdop(TokenPower::Between)?;
-                            FnCall {
-                                callee: FnName::NotBetween,
-                                arguments: vec![left, min, max],
-                            }
-                            .into()
+                            FnCall::new(FnName::NotBetween, vec![left, min, max]).into()
                         }
                         _ => never!(),
                     },
@@ -1006,11 +1292,22 @@ impl Parser<'_> {
                         let min = self.must_parse_expr_tdop(TokenPower::Between)?;
                         self.must_parse_keyword(AND)?;
                         let max = self.must_parse_expr_tdop(TokenPower::Between)?;
-                        FnCall {
-                            callee: FnName::Between,
-                            arguments: vec![left, min, max],
+                        FnCall::new(FnName::Between, vec![left, min, max]).into()
+                    }
+                    6 => {
+                        let report_token = self.peek()?;
+                        let alias = self.must_parse_identifier_string()?;
+                        // nested alias like `1 as a as b` is not allowed
+                        match &left {
+                            Expr::Alias(prev_alias) => {
+                                return emit_error!(Conflicts {
+                                    this: alias.to_owned(),
+                                    that: prev_alias.alias.clone(),
+                                    pos: self.token_pos(&report_token)
+                                });
+                            }
+                            _ => Alias::new(Box::new(left), alias.to_owned()).into(),
                         }
-                        .into()
                     }
                     _ => never!(),
                 }
@@ -1022,7 +1319,7 @@ impl Parser<'_> {
     }
 
     /// caller should ensure the first token is 'interval' keyword
-    fn must_parse_interval(&mut self) -> Result<Value, ParseError> {
+    fn must_parse_interval(&mut self) -> Result<Literal, ParseError> {
         // parse INTERVAL
         next_expect!(self, KeywordOrIdentifier);
         // parse number
@@ -1037,36 +1334,104 @@ impl Parser<'_> {
                 5 => IntervalUnit::Year,
                 _ => never!(),
             };
-        Ok(Value::Interval(n, unit))
+        Ok(Literal::Interval(n, unit))
+    }
+
+    /// the prefix is the str of DelimitedIdentifier or KeywordOrIdentifier
+    fn must_parse_identifier_based_prefix(
+        &mut self,
+        prefix: &str,
+    ) -> Result<Identifier, ParseError> {
+        // only support up to one qualifier
+        let id = if next_if!(self, Dot) {
+            let token = next_expect!(self, [DelimitedIdentifier, KeywordOrIdentifier]);
+            Identifier::new(self.token_str(&token).to_owned(), Some(prefix.to_owned()))
+        } else {
+            Identifier::new(prefix.to_owned(), None)
+        };
+
+        Ok(id)
     }
 
     fn must_parse_identifier(&mut self) -> Result<Identifier, ParseError> {
         let token = next_expect!(self, [DelimitedIdentifier, KeywordOrIdentifier]);
-        let mut identifier = Identifier {
-            name: self.token_str(&token).to_owned(),
-            qualifier: None,
-        };
-        // only support up to one qualifier
-        if next_if!(self, Dot) {
-            let token = next_expect!(self, [DelimitedIdentifier, KeywordOrIdentifier]);
-            identifier.qualifier = Some(self.token_str(&token).to_owned());
+        let prefix = self.token_str(&token);
+        self.must_parse_identifier_based_prefix(prefix)
+    }
+
+    fn try_parse_fn_call_args(&mut self) -> Result<Option<Vec<Expr>>, ParseError> {
+        if next_if!(self, LParen) {
+            if next_if!(self, RParen) {
+                // empty args
+                return Ok(Some(vec![]));
+            }
+            let args = self.must_parse_expr_list()?;
+            next_expect!(self, RParen);
+            return Ok(Some(args));
         }
-        Ok(identifier)
+        Ok(None)
     }
 
     fn must_parse_map(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut res = vec![];
-        loop {
+        comma_separated!(self, {
             // key
             res.push(self.must_parse_expr()?);
             next_expect!(self, Colon);
             // value
             res.push(self.must_parse_expr()?);
-            if !next_if!(self, Comma) {
-                break;
+        });
+        Ok(res)
+    }
+
+    /// assume `IF` is consumed
+    fn must_parse_if_body(&mut self) -> Result<FnCall, ParseError> {
+        let scrutinee = self.must_parse_expr()?;
+        self.must_parse_keyword(THEN)?;
+        let branch = self.must_parse_expr()?;
+        self.must_parse_keyword(ELSE)?;
+        let else_branch = self.must_parse_expr()?;
+        self.must_parse_keyword(END)?;
+        Ok(FnCall::new(
+            FnName::If,
+            vec![scrutinee, branch, else_branch],
+        ))
+    }
+
+    /// assume `CASE` is consumed
+    fn must_parse_case_when_body(&mut self) -> Result<FnCall, ParseError> {
+        let mut args = vec![];
+        // optional scrutinee
+        let fn_name = if self.try_parse_keyword(WHEN)? {
+            FnName::MultiIf
+        } else {
+            args.push(self.must_parse_expr()?);
+            self.must_parse_keyword(WHEN)?;
+            FnName::CaseWhen
+        };
+        // branches
+        loop {
+            args.push(self.must_parse_expr()?);
+            self.must_parse_keyword(THEN)?;
+            args.push(self.must_parse_expr()?);
+
+            match self.must_parse_one_of_keywords(&[WHEN, ELSE, END])? {
+                0 => continue,
+                1 => {
+                    args.push(self.must_parse_expr()?);
+                    self.must_parse_keyword(END)?;
+                    break;
+                }
+                2 => {
+                    // else branch is null by default
+                    args.push(Literal::Null.into());
+                    break;
+                }
+                _ => never!(),
             }
         }
-        Ok(res)
+
+        Ok(FnCall::new(fn_name, args))
     }
 }
 
@@ -1219,12 +1584,7 @@ impl<'a> Parser<'a> {
             28 => {
                 next_expect!(self, LParen);
                 let mut types = vec![];
-                loop {
-                    types.push(self.must_parse_datatype()?);
-                    if !next_if!(self, Comma) {
-                        break;
-                    }
-                }
+                comma_separated!(self, types.push(self.must_parse_datatype()?));
                 next_expect!(self, RParen);
                 CompoundDataType::Tuple(types).into()
             }
@@ -1256,19 +1616,16 @@ impl<'a> Parser<'a> {
     fn must_parse_enum_binds(&mut self) -> Result<Vec<EnumBind>, ParseError> {
         let mut id = 0usize;
         let mut res = vec![];
-        loop {
+        comma_separated!(self, {
             let literal = self.must_parse_string_literal()?;
             id = if next_if!(self, Eq) {
                 self.must_parse_integer_literal()?
             } else {
                 id
             };
-            res.push(EnumBind { id, literal });
+            res.push(EnumBind::new(id, literal));
             id += 1;
-            if !next_if!(self, Comma) {
-                break;
-            }
-        }
+        });
         Ok(res)
     }
 
@@ -1314,10 +1671,10 @@ impl<'a> Parser<'a> {
         if self.peeked.is_none() {
             loop {
                 let token = self.tokenizer.next_token()?;
-                if token.is_whitespace() {
-                    continue;
+                if !token.is_whitespace() {
+                    self.peeked = Some(token);
+                    break;
                 }
-                self.peeked = Some(token);
             }
         }
 
@@ -1365,14 +1722,13 @@ impl<'a> Parser<'a> {
             Mul | Div | Mod => TokenPower::MulDivMod,
             LBracket => TokenPower::Access,
             KeywordOrIdentifier => {
-                let s = self.token_str(&token);
-                if [NOT, IS, IN, LIKE, ILIKE]
-                    .iter()
-                    .any(|&kw| test_keyword!(s, kw))
-                {
+                let s = self.token_str(token);
+                if test_keywords!(s, [NOT, IS, IN, LIKE, ILIKE]) {
                     TokenPower::Comparison
                 } else if test_keyword!(s, BETWEEN) {
                     TokenPower::Between
+                } else if test_keyword!(s, AS) {
+                    TokenPower::Alias
                 } else {
                     TokenPower::Terminator
                 }
@@ -1391,6 +1747,7 @@ enum TokenPower {
     Not,
     Comparison,
     Between,
+    Alias,
     BitOr,
     BitXor,
     BitAnd,
@@ -1398,4 +1755,12 @@ enum TokenPower {
     PlusMinus,
     MulDivMod,
     Access,
+}
+
+#[derive(Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum SetOpPower {
+    Terminator,
+    Except,
+    Union,
+    Intersect,
 }

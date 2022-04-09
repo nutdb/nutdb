@@ -8,7 +8,7 @@ pub use expr::*;
 pub use item::*;
 pub use query::*;
 
-use derive_more::From;
+use derive_more::{Constructor, From};
 
 #[derive(Debug, Clone, From)]
 pub enum Statement {
@@ -25,20 +25,20 @@ pub enum Statement {
     Set(SetStmt),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct SelectStmt {
     pub query: Query,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct ExplainStmt {
     pub query: Query,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct CreateTableStmt {
-    pub if_not_exists: bool,
     pub name: String,
+    pub if_not_exists: bool,
     pub columns: Vec<ColumnDefinition>,
     pub constraints: Vec<ConstraintDefinition>,
     pub indexes: Vec<IndexDefinition>,
@@ -48,10 +48,10 @@ pub struct CreateTableStmt {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct CreateViewStmt {
-    pub if_not_exists: bool,
     pub name: String,
+    pub if_not_exists: bool,
     pub strategy: String,
     pub primary_key: Option<Vec<Expr>>,
     pub order_by: Option<Vec<Expr>>,
@@ -60,21 +60,21 @@ pub struct CreateViewStmt {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct InsertStmt {
     pub table_name: String,
     pub column_list: Option<Vec<String>>,
-    pub data: InsertData,
+    pub data: InsertSource,
 }
 
 #[derive(Debug, Clone)]
-pub enum InsertData {
-    Rows(Vec<Vec<Value>>),
+pub enum InsertSource {
+    Rows { column_size: usize, data: Vec<Expr> },
     Subquery(Query),
     FnCall(FnCall),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct AlterStmt {
     pub action: Alter,
 }
@@ -86,28 +86,28 @@ pub enum DescribeStmt {
     View { name: String },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct OptimizeStmt {
     pub table_name: String,
     pub partition_key: Option<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct SetStmt {
     pub config_name: String,
     pub value: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct DropStmt {
     pub typ: DatabaseEntity,
-    pub name: String,
     pub if_exists: bool,
+    pub name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct TruncateStmt {
     pub typ: DatabaseEntity,
-    pub name: String,
     pub if_exists: bool,
+    pub name: String,
 }

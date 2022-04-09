@@ -54,8 +54,8 @@ pub enum SyntaxError {
         literal: String,
         source: ParseIntError,
     },
-    #[error("({that}) conflicts with ({this}) at {pos}")]
-    OptionConflicts {
+    #[error("({this}) conflicts with ({that}) near {pos}")]
+    Conflicts {
         this: String,
         that: String,
         pos: Position,

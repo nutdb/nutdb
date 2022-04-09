@@ -543,7 +543,6 @@ fn get_char_if_invalid_end_of_numeric(ch: Option<char>) -> Option<char> {
 
 #[cfg(test)]
 mod tests {
-    use thiserror::private::DisplayAsDisplay;
     use TokenType::*;
 
     use crate::parser::tokenizer::{Token, TokenType, Tokenizer};

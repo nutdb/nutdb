@@ -1,7 +1,7 @@
 use crate::parser::ast::{Expr, FnCall};
 use bigdecimal::BigDecimal;
 
-use derive_more::From;
+use derive_more::{Constructor, From};
 
 #[derive(Debug, Clone, From)]
 pub enum DataType {
@@ -65,26 +65,26 @@ pub enum CompoundDataType {
     Nullable(Box<DataType>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct EnumBind {
     pub id: usize,
     pub literal: String,
 }
 
 /// Entity is an identifier or an compound identifier.
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Constructor)]
 pub struct Identifier {
     pub name: String,
     pub qualifier: Option<String>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Constructor)]
 pub struct Wildcard {
     pub qualifier: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Value {
+pub enum Literal {
     Integer(u128),
     /// BigDecimal is too big so box it.
     Float(Box<BigDecimal>),
@@ -94,6 +94,19 @@ pub enum Value {
     Interval(u64, IntervalUnit),
     // Null is special
     Null,
+}
+
+#[derive(Debug, Clone, Constructor)]
+pub struct Collection {
+    typ: CollectionType,
+    items: Vec<Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CollectionType {
+    Tuple,
+    Map,
+    Array,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,17 +169,11 @@ pub enum FnName {
     /// syntax sugar: `<expr> BETWEEN <expr> AND <expr>`
     Between,
     NotBetween,
-    /// syntax sugar: `(expr, ...)`
-    Tuple,
-    /// syntax sugar: `[expr, ...]`
-    Array,
-    /// syntax sugar: `{'key': 'value', ...}`
-    Map,
     /// other functions by id
     Others(Identifier),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct ColumnDefinition {
     pub name: String,
     pub typ: DataType,
@@ -174,13 +181,13 @@ pub struct ColumnDefinition {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct ConstraintDefinition {
     pub name: String,
     pub check: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct IndexDefinition {
     pub name: String,
     pub indexer: FnCall,

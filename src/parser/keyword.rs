@@ -16,20 +16,35 @@ declare_keywords! {
     AS => "as",
     ON => "on",
     IN => "in",
+    FROM => "from",
+
+    // set operation
+    INTERSECT => "intersect",
+    UNION => "union",
+    ALL => "all",
+    EXCEPT => "except",
+    DISTINCT => "distinct",
 
     // select
     WITH => "with",
     SELECT => "select",
-    DISTINCT => "distinct",
-    FROM => "from",
+    JOIN => "join",
     WHERE => "where",
     GROUP => "group",
     HAVING => "having",
     ORDER => "order",
     LIMIT => "limit",
+    OFFSET => "offset",
+    USING => "using",
+    TIES => "ties",
 
     // explain
     EXPLAIN => "explain",
+
+    // insert
+    INSERT => "insert",
+    INTO => "into",
+    VALUES => "values",
 
     // create
     CREATE => "create",
@@ -81,6 +96,7 @@ declare_keywords! {
     CASE => "case",
     WHEN => "when",
     THEN => "then",
+    ELSE => "else",
     EXISTS => "exists",
     END => "end",
 
@@ -111,5 +127,10 @@ declare_keywords! {
     UUID => "uuid",
     DATE => "date", DATETIME => "datetime",
     ARRAY => "array", ENUM => "enum", TUPLE => "tuple", MAP => "map",
-    DICTIONARY => "dictionary", NULLABLE => "nullable"
+    DICTIONARY => "dictionary", NULLABLE => "nullable",
+
+    // join type
+    INNER => "inner", OUTER => "outer",
+    LEFT => "left", RIGHT => "right",
+    FULL => "full", SEMI => "semi", ANTI => "anti"
 }

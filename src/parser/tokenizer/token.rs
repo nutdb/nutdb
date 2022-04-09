@@ -1,4 +1,4 @@
-use derive_more::Display;
+use derive_more::{Constructor, Display};
 
 use crate::parser::tokenizer::utf8_iter::Span;
 
@@ -90,16 +90,10 @@ pub enum TokenType {
     EOF,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Constructor)]
 pub struct Token {
     pub t: TokenType,
     pub span: Span,
-}
-
-impl Token {
-    pub fn new(t: TokenType, span: Span) -> Self {
-        Token { t, span }
-    }
 }
 
 impl Token {

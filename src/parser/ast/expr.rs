@@ -1,47 +1,49 @@
 use crate::parser::ast::{
-    BinaryOperator, FnName, Identifier, Query, UnaryOperator, Value, Wildcard,
+    BinaryOperator, Collection, FnName, Identifier, Literal, Query, UnaryOperator, Wildcard,
 };
 
-use derive_more::From;
+use derive_more::{Constructor, From};
 
 #[derive(Debug, Clone, From)]
 pub enum Expr {
+    Alias(Alias),
     Wildcard(Wildcard),
     Identifier(Identifier),
     QueryParameter(QueryParameter),
-    Value(Value),
+    Literal(Literal),
+    Collection(Collection),
     UnaryOp(UnaryOp),
     BinaryOp(BinaryOp),
     FnCall(FnCall),
     Subquery(Query),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct UnaryOp {
     pub op: UnaryOperator,
     pub operand: Box<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct BinaryOp {
     pub op: BinaryOperator,
     pub left: Box<Expr>,
     pub right: Box<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct FnCall {
     pub callee: FnName,
     pub arguments: Vec<Expr>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Constructor)]
 pub struct QueryParameter {
     pub index: usize,
 }
 
-#[derive(Debug, Clone)]
-pub struct AliasedExpr {
-    pub expr: Expr,
-    pub alias: Option<String>,
+#[derive(Debug, Clone, Constructor)]
+pub struct Alias {
+    pub inner: Box<Expr>,
+    pub alias: String,
 }
