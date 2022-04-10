@@ -17,6 +17,11 @@ thiserror = "1.0"
 derive_more = "0.99"
 bigdecimal = "0.3"
 
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "parser_bench"
+harness = false
+
 [features]
-
-

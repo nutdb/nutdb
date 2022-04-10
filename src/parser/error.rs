@@ -33,8 +33,8 @@ pub enum SyntaxError {
         actual: String,
         pos: Position,
     },
-    #[error("fail to parse at {pos}")]
-    ParseFail { pos: Position },
+    #[error("fail to parse ({msg}) at {pos}")]
+    ParseFail { msg: String, pos: Position },
     #[error("empty query")]
     EmptyQuery,
     #[error("invalid escaped unicode '\\u{{{hex}}}' in string literal")]

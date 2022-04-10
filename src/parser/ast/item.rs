@@ -1,12 +1,14 @@
 use crate::parser::ast::{Expr, FnCall};
 use bigdecimal::BigDecimal;
+use std::borrow::Cow;
 
+use crate::parser::Query;
 use derive_more::{Constructor, From};
 
 #[derive(Debug, Clone, From)]
-pub enum DataType {
+pub enum DataType<'a> {
     Scalar(ScalarDataType),
-    Compound(CompoundDataType),
+    Compound(CompoundDataType<'a>),
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -50,45 +52,46 @@ pub enum ScalarDataType {
 }
 
 #[derive(Debug, Clone)]
-pub enum CompoundDataType {
+pub enum CompoundDataType<'a> {
     /// Array
-    Array(Box<DataType>),
+    Array(Box<DataType<'a>>),
     /// Enum
-    Enum(Vec<EnumBind>),
+    Enum(Vec<EnumBind<'a>>),
     /// Tuple
-    Tuple(Vec<DataType>),
+    Tuple(Vec<DataType<'a>>),
     /// Map
-    Map(Box<DataType>, Box<DataType>),
+    Map(Box<DataType<'a>>, Box<DataType<'a>>),
     /// Special Dictionary
-    Dictionary(Box<DataType>),
+    Dictionary(Box<DataType<'a>>),
     /// Special Nullable
-    Nullable(Box<DataType>),
+    Nullable(Box<DataType<'a>>),
 }
 
 #[derive(Debug, Clone, Constructor)]
-pub struct EnumBind {
+pub struct EnumBind<'a> {
     pub id: usize,
-    pub literal: String,
+    pub literal: Cow<'a, str>,
 }
 
 /// Entity is an identifier or an compound identifier.
 #[derive(Debug, Clone, Eq, PartialEq, Constructor)]
-pub struct Identifier {
-    pub name: String,
-    pub qualifier: Option<String>,
+pub struct Identifier<'a> {
+    pub name: IdentifierName<'a>,
+    pub qualifier: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Constructor)]
-pub struct Wildcard {
-    pub qualifier: Option<String>,
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum IdentifierName<'a> {
+    Wildcard,
+    Word(&'a str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Literal {
+pub enum Literal<'a> {
     Integer(u128),
     /// BigDecimal is too big so box it.
     Float(Box<BigDecimal>),
-    String(String),
+    String(Cow<'a, str>),
     Boolean(bool),
     // Interval is special because users can only use its literal.
     Interval(u64, IntervalUnit),
@@ -97,9 +100,9 @@ pub enum Literal {
 }
 
 #[derive(Debug, Clone, Constructor)]
-pub struct Collection {
+pub struct Collection<'a> {
     typ: CollectionType,
-    items: Vec<Expr>,
+    items: Vec<Expr<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,7 +162,7 @@ pub enum BinaryOperator {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FnName {
+pub enum FnName<'a> {
     /// syntax sugar: `IF <expr> THEN <expr> ELSE <expr> END`
     If,
     /// syntax sugar: `CASE (WHEN <expr> THEN <expr>)... ELSE <expr> END`
@@ -169,32 +172,57 @@ pub enum FnName {
     /// syntax sugar: `<expr> BETWEEN <expr> AND <expr>`
     Between,
     NotBetween,
-    /// other functions by id
-    Others(Identifier),
+    Exists,
+    NotExists,
+    /// other functions by name
+    Others(&'a str),
 }
 
 #[derive(Debug, Clone, Constructor)]
-pub struct ColumnDefinition {
-    pub name: String,
-    pub typ: DataType,
-    pub default: Option<Expr>,
-    pub comment: Option<String>,
+pub struct ColumnDefinition<'a> {
+    pub name: &'a str,
+    pub typ: DataType<'a>,
+    pub default: Option<Expr<'a>>,
+    pub comment: Option<Cow<'a, str>>,
 }
 
 #[derive(Debug, Clone, Constructor)]
-pub struct ConstraintDefinition {
-    pub name: String,
-    pub check: Expr,
+pub struct ConstraintDefinition<'a> {
+    pub name: &'a str,
+    pub check: Expr<'a>,
 }
 
 #[derive(Debug, Clone, Constructor)]
-pub struct IndexDefinition {
-    pub name: String,
-    pub indexer: FnCall,
+pub struct IndexDefinition<'a> {
+    pub name: &'a str,
+    pub indexer: FnCall<'a>,
 }
 
 #[derive(Debug, Clone)]
 pub enum DatabaseEntity {
     Table,
     View,
+}
+
+#[derive(Debug, Clone, Constructor)]
+pub struct TableDefinition<'a> {
+    pub name: &'a str,
+    pub columns: Vec<ColumnDefinition<'a>>,
+    pub constraints: Vec<ConstraintDefinition<'a>>,
+    pub indexes: Vec<IndexDefinition<'a>>,
+    pub primary_key: Option<Vec<Expr<'a>>>,
+    pub order_by: Option<Vec<Expr<'a>>>,
+    pub partition_by: Option<Expr<'a>>,
+    pub comment: Option<Cow<'a, str>>,
+}
+
+#[derive(Debug, Clone, Constructor)]
+pub struct ViewDefinition<'a> {
+    pub name: &'a str,
+    pub strategy: &'a str,
+    pub primary_key: Option<Vec<Expr<'a>>>,
+    pub order_by: Option<Vec<Expr<'a>>>,
+    pub partition_by: Option<Expr<'a>>,
+    pub query: Query<'a>,
+    pub comment: Option<Cow<'a, str>>,
 }

@@ -15,7 +15,6 @@ declare_keywords! {
     BY => "by",
     AS => "as",
     ON => "on",
-    IN => "in",
     FROM => "from",
 
     // set operation
@@ -38,6 +37,10 @@ declare_keywords! {
     USING => "using",
     TIES => "ties",
 
+    // order direction
+    ASC => "asc",
+    DESC => "desc",
+
     // explain
     EXPLAIN => "explain",
 
@@ -50,7 +53,6 @@ declare_keywords! {
     CREATE => "create",
     PRIMARY => "primary",
     KEY => "key",
-    PARTITION => "partition",
     COMMENT => "comment",
     UPDATE => "update",
     DEFAULT => "default",
@@ -62,6 +64,13 @@ declare_keywords! {
     // drop
     DROP => "drop",
 
+    // alter
+    ALTER => "alter",
+    ADD => "add",
+    RENAME => "rename",
+    FIRST => "first",
+    AFTER => "after",
+
     // truncate
     TRUNCATE => "truncate",
 
@@ -71,12 +80,14 @@ declare_keywords! {
     // set
     SET => "set",
 
-    // items
+    // entity
     DATABASE => "database",
     TABLE => "table",
     VIEW => "view",
+    COLUMN => "column",
     INDEX => "index",
     CONSTRAINT => "constraint",
+    PARTITION => "partition",
 
     // null
     NULL => "null",
@@ -90,6 +101,8 @@ declare_keywords! {
     OR => "or",
     XOR => "xor",
     NOT => "not",
+    IN => "in",
+    EXISTS => "exists",
 
     // flow
     IF => "if",
@@ -97,7 +110,6 @@ declare_keywords! {
     WHEN => "when",
     THEN => "then",
     ELSE => "else",
-    EXISTS => "exists",
     END => "end",
 
     // cmp
@@ -111,7 +123,7 @@ declare_keywords! {
     SECOND => "second",
     MINUTE => "minute",
     HOUR => "hour",
-    DAY => "hour",
+    DAY => "day",
     MONTH => "month",
     YEAR => "year",
 

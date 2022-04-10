@@ -198,8 +198,6 @@ impl Tokenizer<'_> {
         if self.source.slice(&span) == "0" {
             // may be hex or float
             match self.source.peek() {
-                // meet EOF
-                None => return emit_token!(IntegerLiteral on span),
                 Some('x' | 'X') => {
                     // hex
                     self.source.consume_peeked();
@@ -213,12 +211,15 @@ impl Tokenizer<'_> {
                     // is float
                 }
                 // numbers starts with `0` without dot are not allowed
-                Some(ch) => {
-                    return emit_error!(
-                        self,
-                        UnexpectedChar,
-                        format!("'{}' is invalid in numeric literal", ch)
-                    );
+                next_ch => {
+                    if let Some(ch) = get_char_if_invalid_end_of_numeric(next_ch) {
+                        return emit_error!(
+                            self,
+                            UnexpectedChar,
+                            format!("'{}' is invalid in numeric literal", ch)
+                        );
+                    }
+                    return emit_token!(IntegerLiteral on span);
                 }
             }
         }
