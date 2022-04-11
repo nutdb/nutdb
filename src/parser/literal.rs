@@ -7,7 +7,7 @@ use std::str::FromStr;
 macro_rules! decimal_from_str {
     ($s:ident) => {
         BigDecimal::from_str($s).map_err(|e| SyntaxError::InvalidFloatLiteral {
-            literal: $s.to_owned(),
+            raw: $s.to_owned(),
             source: e,
         })?
     };
@@ -18,13 +18,13 @@ macro_rules! decimal_from_str {
 macro_rules! integer_from_str {
     ($t:ty, $s:ident) => {
         <$t>::from_str($s).map_err(|e| SyntaxError::InvalidIntegerLiteral {
-            literal: $s.to_owned(),
+            raw: $s.to_owned(),
             source: e,
         })?
     };
     (hex, $t:ty, $s:ident) => {
         <$t>::from_str_radix($s, 16).map_err(|e| SyntaxError::InvalidHexLiteral {
-            literal: $s.to_owned(),
+            raw: $s.to_owned(),
             source: e,
         })?
     };

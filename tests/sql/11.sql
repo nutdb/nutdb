@@ -17,4 +17,5 @@ CREATE TABLE IF NOT EXISTS uk_price_paid
     category UInt8,
     INDEX idx_price minmax(price),
     CONSTRAINT c_is_new CHECK is_new < 2
+)
 ORDER BY (postcode1, postcode2, addr1, addr2)

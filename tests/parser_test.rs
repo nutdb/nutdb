@@ -7,6 +7,7 @@ macro_rules! test_sql_files {
         fn $fn_name() {
             let sql = include_str!(concat!("sql/", $filename));
             let res = Parser::parse(sql);
+            println!("{:#?}", res);
             if res.is_err() {
                 eprintln!("{:#?}", res);
             }
@@ -30,4 +31,5 @@ test_sql_files!(
     parse_sql_file_11, "11.sql";
     parse_sql_file_12, "12.sql";
     parse_sql_file_13, "13.sql";
+    parse_sql_file_14, "14.sql";
 );

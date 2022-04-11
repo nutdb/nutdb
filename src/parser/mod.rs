@@ -8,14 +8,14 @@ pub use ast::*;
 pub use error::*;
 use keyword::*;
 use literal::*;
-use rewrite::*;
+use simplify::*;
 use tokenizer::{Position, Token, TokenType, Tokenizer};
 
 mod ast;
 mod error;
 mod keyword;
 mod literal;
-mod rewrite;
+mod simplify;
 mod tokenizer;
 
 pub struct Parser<'a> {
@@ -1212,10 +1212,11 @@ impl<'a> Parser<'a> {
             let token = self.peek()?;
             let next_power = self.token_power(&token);
             if next_power <= power {
-                return Ok(expr);
+                break;
             }
             expr = self.must_parse_expr_infix(expr, next_power)?;
         }
+        Ok(expr)
     }
 
     fn must_parse_expr_prefix(&mut self) -> Result<Expr<'a>, ParseError> {
@@ -1256,8 +1257,15 @@ impl<'a> Parser<'a> {
                 e
             }
             Minus => {
-                let e = self.must_parse_expr_prefix()?;
-                UnaryOp::new(UnaryOperator::Neg, Box::new(e)).into()
+                let token = next_expect!(self, [IntegerLiteral, HexLiteral, FloatLiteral]);
+                let s = self.token_str(&token);
+                match token.t {
+                    IntegerLiteral => Literal::Integer(literal::integer_from_str!(u128, s), false),
+                    HexLiteral => Literal::Integer(literal::integer_from_str!(hex, u128, s), false),
+                    FloatLiteral => Literal::Float(Box::new(-literal::decimal_from_str!(s))),
+                    _ => never!(),
+                }
+                .into()
             }
             Plus => self.must_parse_expr_prefix()?,
             Mul => Identifier::new(IdentifierName::Wildcard, None).into(),
@@ -1273,8 +1281,8 @@ impl<'a> Parser<'a> {
                 Literal::String(Cow::Owned(unescape_double_quoted_string(s)?)).into()
             }
             FloatLiteral => Literal::Float(Box::new(literal::decimal_from_str!(s))).into(),
-            HexLiteral => Literal::Integer(literal::integer_from_str!(hex, u128, s)).into(),
-            IntegerLiteral => Literal::Integer(literal::integer_from_str!(u128, s)).into(),
+            HexLiteral => Literal::Integer(literal::integer_from_str!(hex, u128, s), true).into(),
+            IntegerLiteral => Literal::Integer(literal::integer_from_str!(u128, s), true).into(),
             KeywordOrIdentifier => {
                 // maybe booleans, null, identifiers,  fn name.
                 if test_keyword!(s, TRUE) {
@@ -1285,7 +1293,7 @@ impl<'a> Parser<'a> {
                     Literal::Null.into()
                 } else if test_keyword!(s, NOT) {
                     let e = self.must_parse_expr_prefix()?;
-                    UnaryOp::new(UnaryOperator::Not, Box::new(e)).into()
+                    simplified_not(e)
                 } else if test_keyword!(s, INTERVAL) {
                     self.must_parse_interval()?.into()
                 } else if test_keyword!(s, IF) {
@@ -1359,12 +1367,6 @@ impl<'a> Parser<'a> {
             };
         }
 
-        macro_rules! emit_unary_op {
-            ($op:ident, $left:expr) => {
-                UnaryOp::new(UnaryOperator::$op, Box::new($left)).into()
-            };
-        }
-
         let token = self.next()?;
         let expr = match token.t {
             Plus => emit_binary_op!(self, Plus, left, this_power),
@@ -1376,8 +1378,8 @@ impl<'a> Parser<'a> {
             Lt => emit_binary_op!(self, Lt, left, this_power),
             GtEq => emit_binary_op!(self, GtEq, left, this_power),
             LtEq => emit_binary_op!(self, LtEq, left, this_power),
-            Eq => emit_binary_op!(self, Eq, left, this_power),
-            NotEq => emit_binary_op!(self, NotEq, left, this_power),
+            Eq => simplified_eq(left, self.must_parse_expr_tdop(this_power)?),
+            NotEq => simplified_neq(left, self.must_parse_expr_tdop(this_power)?),
             BitOr => emit_binary_op!(self, BitwiseOr, left, this_power),
             BitAnd => emit_binary_op!(self, BitwiseAnd, left, this_power),
             BitXor => emit_binary_op!(self, BitwiseXor, left, this_power),
@@ -1391,9 +1393,9 @@ impl<'a> Parser<'a> {
             KeywordOrIdentifier => {
                 // these powers correspond to only one keyword, so matches power first to speed up
                 match this_power {
-                    TokenPower::And => emit_binary_op!(self, And, left, this_power),
-                    TokenPower::Or => emit_binary_op!(self, Or, left, this_power),
-                    TokenPower::Xor => emit_binary_op!(self, Xor, left, this_power),
+                    TokenPower::And => simplified_and(left, self.must_parse_expr_tdop(this_power)?),
+                    TokenPower::Or => simplified_or(left, self.must_parse_expr_tdop(this_power)?),
+                    TokenPower::Xor => simplified_xor(left, self.must_parse_expr_tdop(this_power)?),
                     TokenPower::Not => {
                         // this `not` is a part of binary operator
                         match self
@@ -1429,9 +1431,9 @@ impl<'a> Parser<'a> {
                             match self.must_parse_one_of_keywords(&[NOT, NULL])? {
                                 0 => {
                                     self.must_parse_keyword(NULL)?;
-                                    emit_unary_op!(IsNotNull, left)
+                                    simplified_is_not_null(left)
                                 }
-                                1 => emit_unary_op!(IsNull, left),
+                                1 => simplified_is_null(left),
                                 _ => never!(),
                             }
                         } else if test_keyword!(s, IN) {
@@ -1480,7 +1482,7 @@ impl<'a> Parser<'a> {
             _ => unreachable!(), // leave check here
         };
 
-        Ok(rewrite_expr(expr))
+        Ok(expr)
     }
 
     /// caller should ensure the first token 'interval' has been consumed

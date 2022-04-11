@@ -88,7 +88,8 @@ pub enum IdentifierName<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal<'a> {
-    Integer(u128),
+    /// boolean indicates positive(true) or negative(false)
+    Integer(u128, bool),
     /// BigDecimal is too big so box it.
     Float(Box<BigDecimal>),
     String(Cow<'a, str>),
@@ -126,7 +127,6 @@ pub enum IntervalUnit {
 pub enum UnaryOperator {
     BitwiseNot,
     Not,
-    Neg,
     IsNull,
     IsNotNull,
 }

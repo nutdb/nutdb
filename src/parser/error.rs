@@ -39,21 +39,15 @@ pub enum SyntaxError {
     EmptyQuery,
     #[error("invalid escaped unicode '\\u{{{hex}}}' in string literal")]
     InvalidEscapedUnicode { hex: String },
-    #[error("invalid float '{literal}'")]
+    #[error("invalid float '{raw}'")]
     InvalidFloatLiteral {
-        literal: String,
+        raw: String,
         source: ParseBigDecimalError,
     },
-    #[error("invalid hex '0x{literal}'")]
-    InvalidHexLiteral {
-        literal: String,
-        source: ParseIntError,
-    },
-    #[error("invalid integer '{literal}'")]
-    InvalidIntegerLiteral {
-        literal: String,
-        source: ParseIntError,
-    },
+    #[error("invalid hex '0x{raw}'")]
+    InvalidHexLiteral { raw: String, source: ParseIntError },
+    #[error("invalid integer '{raw}'")]
+    InvalidIntegerLiteral { raw: String, source: ParseIntError },
     #[error("({this}) conflicts with ({that}) near {pos}")]
     Conflicts {
         this: String,
