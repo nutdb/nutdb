@@ -248,34 +248,23 @@ impl<'a> Parser<'a> {
         let mut query = Query::Single(Box::new(self.must_parse_query_body(start_state)?));
         loop {
             let token = self.peek()?;
-            if !token.maybe_keyword() {
+            let next_power = self.union_type_power(&token);
+            if next_power <= power {
                 break;
             }
-
-            let token_str = self.token_str(&token);
-
-            let (next_power, union_type) = if test_keyword!(token_str, INTERSECT) {
-                self.consume_peeked();
-                (UnionTypePower::Intersect, UnionType::Intersect)
-            } else if test_keyword!(token_str, UNION) {
-                self.consume_peeked();
-                (
-                    UnionTypePower::Union,
+            self.consume_peeked();
+            let union_type = match next_power {
+                UnionTypePower::Intersect => UnionType::Intersect,
+                UnionTypePower::Union => {
                     match self.must_parse_one_of_keywords(&[ALL, DISTINCT])? {
                         0 => UnionType::UnionAll,
                         1 => UnionType::UnionDistinct,
                         _ => never!(),
-                    },
-                )
-            } else if test_keyword!(token_str, EXCEPT) {
-                self.consume_peeked();
-                (UnionTypePower::Except, UnionType::Except)
-            } else {
-                break;
+                    }
+                }
+                UnionTypePower::Except => UnionType::Except,
+                UnionTypePower::Terminator => never!(),
             };
-            if next_power <= power {
-                break;
-            }
 
             query = Query::Union {
                 typ: union_type,
@@ -312,11 +301,8 @@ impl<'a> Parser<'a> {
         // after <columns>, every clause starts with a keyword
         let from_clause = self.try_parse_query_clause_from()?;
         let mut join_clauses = vec![];
-        loop {
-            match self.try_parse_query_clause_join()? {
-                Some(j) => join_clauses.push(j),
-                None => break,
-            }
+        while let Some(j) = self.try_parse_query_clause_join()? {
+            join_clauses.push(j)
         }
         let where_clause = self.try_parse_query_clause_where()?;
         let group_by_clause = self.try_parse_query_clause_group_by()?;
@@ -671,8 +657,8 @@ impl<'a> Parser<'a> {
                 if this_size != column_size {
                     let report_token = self.peek()?;
                     return emit_error!(Conflicts {
-                        this: format!("value length {}", this_size),
-                        that: format!("previous value length {}", column_size),
+                        this: format!("row has {} column(s)", this_size),
+                        that: format!("previous rows have {} column(s)", column_size),
                         pos: self.token_pos(&report_token)
                     });
                 }
@@ -1935,6 +1921,26 @@ impl<'a> Parser<'a> {
                 }
             }
             _ => TokenPower::Terminator,
+        }
+    }
+
+    fn union_type_power(&self, token: &Token) -> UnionTypePower {
+        use TokenType::*;
+
+        match token.t {
+            KeywordOrIdentifier => {
+                let s = self.token_str(token);
+                if test_keyword!(s, UNION) {
+                    UnionTypePower::Union
+                } else if test_keyword!(s, INTERSECT) {
+                    UnionTypePower::Intersect
+                } else if test_keyword!(s, EXCEPT) {
+                    UnionTypePower::Except
+                } else {
+                    UnionTypePower::Terminator
+                }
+            }
+            _ => UnionTypePower::Terminator,
         }
     }
 }

@@ -27,4 +27,7 @@ test_sql_files!(
     parse_sql_file_8, "8.sql";
     parse_sql_file_9, "9.sql";
     parse_sql_file_10, "10.sql";
+    parse_sql_file_11, "11.sql";
+    parse_sql_file_12, "12.sql";
+    parse_sql_file_13, "13.sql";
 );
