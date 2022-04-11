@@ -1,0 +1,1 @@
+INSERT INTO test (c1, c2, c3) VALUES (1, 2, 3), ('1', '2', '3')
