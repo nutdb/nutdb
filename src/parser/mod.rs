@@ -1,3 +1,5 @@
+//! Parses SQL strings into Query ASTs.
+
 use std::borrow::Cow;
 use std::hint::unreachable_unchecked;
 use std::str::FromStr;

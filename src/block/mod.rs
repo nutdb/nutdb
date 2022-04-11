@@ -1,0 +1,1 @@
+//! A block is a chunk of columns and correspond info.
